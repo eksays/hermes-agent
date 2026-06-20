@@ -1759,6 +1759,20 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Memory indexing — local filesystem awareness for Hermes Memory System.
+    # Hermes scans configured root paths, indexes file metadata into SQLite FTS5,
+    # and exposes search/status tools to the agent. All offline, zero API calls.
+    "memory_index": {
+        "enabled": True,
+        "roots": [],
+        "exclude": [
+            "node_modules", ".git", ".venv", "__pycache__",
+            "dist", "build", ".next", ".cache", ".hermes",
+        ],
+        "scan_interval_minutes": 30,
+        "max_file_size_mb": 50,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
