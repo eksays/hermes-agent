@@ -33,7 +33,7 @@ def test_init_creates_tables(db_path):
         try:
             cur = conn.execute("PRAGMA user_version")
             version = cur.fetchone()[0]
-            assert version == 1
+            assert version == 2
         finally:
             conn.close()
     finally:

@@ -8,7 +8,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _INIT_SQL = """
 PRAGMA journal_mode=WAL;
@@ -49,6 +49,65 @@ CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
     VALUES ('delete', old.id, old.path, old.filename);
     INSERT INTO files_fts(rowid, path, filename)
     VALUES (new.id, new.path, new.filename);
+END;
+
+-- v2: projects and git index
+
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_path TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    project_type TEXT DEFAULT 'unknown',
+    framework TEXT DEFAULT '',
+    build_tool TEXT DEFAULT '',
+    last_active TEXT,
+    indexed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS project_deps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    dep_name TEXT NOT NULL,
+    dep_version TEXT DEFAULT '',
+    is_dev INTEGER DEFAULT 0,
+    dep_type TEXT DEFAULT 'npm'
+);
+
+CREATE TABLE IF NOT EXISTS git_repos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    git_path TEXT NOT NULL,
+    default_branch TEXT DEFAULT 'main',
+    remote_url TEXT DEFAULT '',
+    last_commit_hash TEXT DEFAULT '',
+    last_commit_date TEXT,
+    last_commit_message TEXT DEFAULT '',
+    commit_count INTEGER DEFAULT 0,
+    branch_count INTEGER DEFAULT 0
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS projects_fts USING fts5(
+    name, root_path, framework,
+    content='projects',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS projects_ai AFTER INSERT ON projects BEGIN
+    INSERT INTO projects_fts(rowid, name, root_path, framework)
+    VALUES (new.id, new.name, new.root_path, new.framework);
+END;
+
+CREATE TRIGGER IF NOT EXISTS projects_ad AFTER DELETE ON projects BEGIN
+    INSERT INTO projects_fts(projects_fts, rowid, name, root_path, framework)
+    VALUES ('delete', old.id, old.name, old.root_path, old.framework);
+END;
+
+CREATE TRIGGER IF NOT EXISTS projects_au AFTER UPDATE ON projects BEGIN
+    INSERT INTO projects_fts(projects_fts, rowid, name, root_path, framework)
+    VALUES ('delete', old.id, old.name, old.root_path, old.framework);
+    INSERT INTO projects_fts(rowid, name, root_path, framework)
+    VALUES (new.id, new.name, new.root_path, new.framework);
 END;
 """
 
@@ -91,7 +150,56 @@ class MemoryDB:
                 self._conn.executescript(_INIT_SQL)
                 self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             elif version < _SCHEMA_VERSION:
-                # Future migration point: run upgrade steps here.
+                # v1→v2 migration: add projects, project_deps, git_repos tables
+                if version < 2:
+                    self._conn.executescript("""
+                        CREATE TABLE IF NOT EXISTS projects (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            root_path TEXT UNIQUE NOT NULL,
+                            name TEXT NOT NULL,
+                            project_type TEXT DEFAULT 'unknown',
+                            framework TEXT DEFAULT '',
+                            build_tool TEXT DEFAULT '',
+                            last_active TEXT,
+                            indexed_at TEXT DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS project_deps (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                            dep_name TEXT NOT NULL,
+                            dep_version TEXT DEFAULT '',
+                            is_dev INTEGER DEFAULT 0,
+                            dep_type TEXT DEFAULT 'npm'
+                        );
+                        CREATE TABLE IF NOT EXISTS git_repos (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                            git_path TEXT NOT NULL,
+                            default_branch TEXT DEFAULT 'main',
+                            remote_url TEXT DEFAULT '',
+                            last_commit_hash TEXT DEFAULT '',
+                            last_commit_date TEXT,
+                            last_commit_message TEXT DEFAULT '',
+                            commit_count INTEGER DEFAULT 0,
+                            branch_count INTEGER DEFAULT 0
+                        );
+                        CREATE VIRTUAL TABLE IF NOT EXISTS projects_fts USING fts5(
+                            name, root_path, framework,
+                            content='projects', content_rowid='id',
+                            tokenize='porter unicode61'
+                        );
+                        CREATE TRIGGER IF NOT EXISTS projects_ai AFTER INSERT ON projects BEGIN
+                            INSERT INTO projects_fts(rowid, name, root_path, framework)
+                            VALUES (new.id, new.name, new.root_path, new.framework); END;
+                        CREATE TRIGGER IF NOT EXISTS projects_ad AFTER DELETE ON projects BEGIN
+                            INSERT INTO projects_fts(projects_fts, rowid, name, root_path, framework)
+                            VALUES ('delete', old.id, old.name, old.root_path, old.framework); END;
+                        CREATE TRIGGER IF NOT EXISTS projects_au AFTER UPDATE ON projects BEGIN
+                            INSERT INTO projects_fts(projects_fts, rowid, name, root_path, framework)
+                            VALUES ('delete', old.id, old.name, old.root_path, old.framework);
+                            INSERT INTO projects_fts(rowid, name, root_path, framework)
+                            VALUES (new.id, new.name, new.root_path, new.framework); END;
+                    """)
                 self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     # ── CRUD ──────────────────────────────────────────────────────────────
@@ -193,6 +301,119 @@ class MemoryDB:
         with self._lock:
             self._conn.execute("DELETE FROM files WHERE path = ?", (path,))
 
+    # ── Projects ─────────────────────────────────────────────────────────
+
+    def upsert_project(
+        self,
+        root_path: str,
+        name: str,
+        project_type: str,
+        framework: str = "",
+        build_tool: str = "",
+    ) -> int:
+        """Insert or update a project record. Returns row id."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO projects (root_path, name, project_type, framework,
+                                     build_tool, last_active, indexed_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ON CONFLICT(root_path) DO UPDATE SET
+                    name         = excluded.name,
+                    project_type = excluded.project_type,
+                    framework    = excluded.framework,
+                    build_tool   = excluded.build_tool,
+                    last_active  = datetime('now'),
+                    indexed_at   = datetime('now')
+                """,
+                (root_path, name, project_type, framework, build_tool),
+            )
+            return cursor.lastrowid
+
+    def get_project_by_path(self, root_path: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM projects WHERE root_path = ?", (root_path,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def remove_project(self, root_path: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM projects WHERE root_path = ?", (root_path,))
+
+    def clear_project_deps(self, project_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM project_deps WHERE project_id = ?", (project_id,)
+            )
+
+    def add_project_dep(self, project_id: int, name: str,
+                        version: str, is_dev: bool, dep_type: str) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                """INSERT INTO project_deps (project_id, dep_name, dep_version,
+                   is_dev, dep_type) VALUES (?, ?, ?, ?, ?)""",
+                (project_id, name, version, 1 if is_dev else 0, dep_type),
+            )
+            return cursor.lastrowid
+
+    def upsert_git_repo(
+        self,
+        project_id: int,
+        git_path: str,
+        default_branch: str = "main",
+        remote_url: str = "",
+        last_commit_hash: str = "",
+        last_commit_date: str = "",
+        last_commit_message: str = "",
+        commit_count: int = 0,
+        branch_count: int = 0,
+    ) -> int:
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT id FROM git_repos WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            if existing:
+                self._conn.execute(
+                    """UPDATE git_repos SET git_path=?, default_branch=?,
+                       remote_url=?, last_commit_hash=?, last_commit_date=?,
+                       last_commit_message=?, commit_count=?, branch_count=?
+                     WHERE project_id=?""",
+                    (git_path, default_branch, remote_url, last_commit_hash,
+                     last_commit_date, last_commit_message, commit_count,
+                     branch_count, project_id),
+                )
+                return existing[0]
+            cursor = self._conn.execute(
+                """INSERT INTO git_repos(project_id, git_path, default_branch,
+                   remote_url, last_commit_hash, last_commit_date,
+                   last_commit_message, commit_count, branch_count)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (project_id, git_path, default_branch, remote_url,
+                 last_commit_hash, last_commit_date, last_commit_message,
+                 commit_count, branch_count),
+            )
+            return cursor.lastrowid
+
+    def search_projects(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        if not query.strip():
+            return []
+        with self._lock:
+            cursor = self._conn.execute(
+                """SELECT p.* FROM projects p
+                   JOIN projects_fts ON p.id = projects_fts.rowid
+                   WHERE projects_fts MATCH ?
+                   ORDER BY rank LIMIT ?""",
+                (query, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_project_paths(self) -> List[str]:
+        with self._lock:
+            cursor = self._conn.execute("SELECT root_path FROM projects")
+            return [row["root_path"] for row in cursor.fetchall()]
+
     # ── Introspection ─────────────────────────────────────────────────────
 
     def get_stats(self) -> Dict[str, Any]:
@@ -207,7 +428,14 @@ class MemoryDB:
                 FROM files
                 """
             )
-            return dict(cursor.fetchone())
+            stats = dict(cursor.fetchone())
+            stats["total_projects"] = self._conn.execute(
+                "SELECT COUNT(*) FROM projects"
+            ).fetchone()[0]
+            stats["total_git_repos"] = self._conn.execute(
+                "SELECT COUNT(*) FROM git_repos"
+            ).fetchone()[0]
+            return stats
 
     def get_table_names(self) -> List[str]:
         """Return the list of user table names in the database."""

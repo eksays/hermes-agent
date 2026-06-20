@@ -86,45 +86,60 @@ class MemoryManager:
         type_filter: Optional[str] = None,
         ext_filter: Optional[str] = None,
         limit: int = DEFAULT_SEARCH_LIMIT,
+        scope: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search indexed files via FTS5 full-text search.
+        """Search indexed files and projects via FTS5 full-text search.
 
-        The *query* is sanitised before being passed to the database
-        (lowercased, stripped, special characters removed). Results can be
-        further narrowed by *type_filter* (``file_type`` column) or
-        *ext_filter* (``extension`` column).
+        The *query* is sanitised before being passed to the database.
 
         Parameters
         ----------
         query : str
             Free-text search string.
         type_filter : str or None
-            If given, only return rows whose ``file_type`` matches this value.
+            Filter by ``file_type`` (e.g. ``"code"``, ``"doc"``). Only affects file results.
         ext_filter : str or None
-            If given, only return rows whose ``extension`` matches this value.
+            Filter by file extension (e.g. ``".py"``).
         limit : int
-            Maximum number of results to return. Defaults to
-            :const:`agent.memory.config.DEFAULT_SEARCH_LIMIT` (20).
+            Maximum number of results.
+        scope : str or None
+            ``"file"`` for files only, ``"project"`` for projects only, ``None`` for both.
 
         Returns
         -------
         list[dict]
-            Each dict contains the columns of the ``files`` table.
+            Each dict has a ``_type`` field: ``"file"`` or ``"project"``.
         """
         sanitised = sanitize_query(query)
         if not sanitised:
             return []
 
-        rows = self.db.search_files(sanitised, limit=limit)
-
         results: List[Dict[str, Any]] = []
-        for row in rows:
-            if type_filter is not None and row.get("file_type") != type_filter:
-                continue
-            if ext_filter is not None and row.get("extension") != ext_filter:
-                continue
-            results.append(row)
 
+        # Search files
+        if scope in (None, "file"):
+            try:
+                for row in self.db.search_files(sanitised, limit=limit):
+                    if type_filter is not None and row.get("file_type") != type_filter:
+                        continue
+                    if ext_filter is not None and row.get("extension") != ext_filter:
+                        continue
+                    row["_type"] = "file"
+                    results.append(row)
+            except Exception:
+                pass
+
+        # Search projects
+        if scope in (None, "project"):
+            try:
+                for row in self.db.search_projects(sanitised, limit=limit):
+                    row["_type"] = "project"
+                    results.append(row)
+            except Exception:
+                pass
+
+        # Sort by indexed_at desc, limit
+        results.sort(key=lambda r: r.get("indexed_at", "") or "", reverse=True)
         return results[:limit]
 
     def status(self) -> Dict[str, Any]:
@@ -144,8 +159,8 @@ class MemoryManager:
             "function": {
                 "name": "memory_search",
                 "description": (
-                    "Search the indexed file memory by path or filename. "
-                    "Optional type and extension filters narrow results."
+                    "Search indexed files and projects by name, path, or "
+                    "framework. Use scope='project' to find projects."
                 ),
                 "parameters": {
                     "type": "object",
@@ -154,11 +169,16 @@ class MemoryManager:
                             "type": "string",
                             "description": "Search query for file path or name.",
                         },
+                        "scope": {
+                            "type": "string",
+                            "description": (
+                                "Optional scope: 'file', 'project', or leave empty for both."
+                            ),
+                        },
                         "type_filter": {
                             "type": "string",
                             "description": (
-                                "Optional file type to filter by "
-                                "(e.g. 'code', 'doc', 'config')."
+                                "Optional file type to filter by (e.g. 'code', 'doc')."
                             ),
                         },
                         "ext_filter": {

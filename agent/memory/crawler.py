@@ -14,6 +14,9 @@ from typing import Callable, List, Optional, Set
 from agent.memory import config
 from agent.memory.db import MemoryDB
 from agent.memory.safety import is_path_excluded
+from agent.memory.project_parser import (
+    detect_project, parse_dependencies, detect_git_info, find_projects,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -238,3 +241,57 @@ class MemoryCrawler:
             "files_removed": files_removed,
             "errors": errors,
         }
+
+    def crawl_projects(self) -> dict:
+        """Scan root directories for projects and index them.
+
+        Returns a dict with ``projects_found``, ``projects_indexed`` counts.
+        """
+        projects_added = 0
+        projects_found = 0
+
+        project_roots = find_projects(self.roots, self.exclude_patterns)
+
+        for root_path in project_roots:
+            projects_found += 1
+            info = detect_project(root_path)
+            if info is None:
+                continue
+
+            pid = self.db.upsert_project(
+                root_path=info.root_path,
+                name=info.name,
+                project_type=info.project_type,
+                framework=info.framework,
+                build_tool=info.build_tool,
+            )
+
+            # Index dependencies
+            self.db.clear_project_deps(pid)
+            for dep in parse_dependencies(info.project_type, root_path):
+                self.db.add_project_dep(pid, dep.name, dep.version, dep.is_dev, dep.dep_type)
+
+            # Index git info
+            git_info = detect_git_info(root_path)
+            if git_info is not None:
+                self.db.upsert_git_repo(
+                    project_id=pid,
+                    git_path=git_info.git_path,
+                    default_branch=git_info.default_branch,
+                    remote_url=git_info.remote_url,
+                    last_commit_hash=git_info.last_commit_hash,
+                    last_commit_date=git_info.last_commit_date,
+                    last_commit_message=git_info.last_commit_message,
+                    commit_count=git_info.commit_count,
+                    branch_count=git_info.branch_count,
+                )
+
+            projects_added += 1
+
+        # Clean up stale projects (removed from disk)
+        indexed_roots = set(self.db.get_all_project_paths())
+        current_roots = set(project_roots)
+        for stale in indexed_roots - current_roots:
+            self.db.remove_project(stale)
+
+        return {"projects_found": projects_found, "projects_indexed": projects_added}
