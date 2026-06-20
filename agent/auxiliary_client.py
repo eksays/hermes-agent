@@ -4819,6 +4819,22 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     return {}
 
 
+def _get_task_reasoning_config(task: str) -> Optional[Dict[str, Any]]:
+    """Read auxiliary.<task>.reasoning_effort and parse it into a reasoning_config.
+
+    Returns None when unset/empty (caller should inherit the global default),
+    {"enabled": False} for "none", or {"enabled": True, "effort": <level>}.
+    """
+    if not task:
+        return None
+    task_config = _get_auxiliary_task_config(task)
+    raw = str(task_config.get("reasoning_effort", "") or "").strip()
+    if not raw:
+        return None
+    from hermes_constants import parse_reasoning_effort
+    return parse_reasoning_effort(raw)
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
