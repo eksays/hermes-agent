@@ -5104,6 +5104,13 @@ def call_llm(
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
+    # Per-auxiliary reasoning effort (config: auxiliary.<task>.reasoning_effort).
+    # Only inject when the task sets it and the caller didn't already pass one.
+    if "reasoning" not in effective_extra_body:
+        _task_reasoning = _get_task_reasoning_config(task)
+        if _task_reasoning is not None:
+            effective_extra_body["reasoning"] = _task_reasoning
+
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
