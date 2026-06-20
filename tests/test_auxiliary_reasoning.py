@@ -66,3 +66,46 @@ def test_call_llm_injects_task_reasoning(monkeypatch):
             pass
 
     assert captured.get("extra_body", {}).get("reasoning") == {"enabled": True, "effort": "high"}
+
+
+def test_async_call_llm_injects_task_reasoning(monkeypatch):
+    """async_call_llm should also merge auxiliary.<task>.reasoning_effort into extra_body['reasoning']."""
+    import asyncio
+    import agent.auxiliary_client as ac
+
+    captured = {}
+
+    def fake_build_call_kwargs(provider, model, messages, **kw):
+        captured["extra_body"] = kw.get("extra_body")
+        return {"model": model, "messages": messages, "extra_body": kw.get("extra_body")}
+
+    class _FakeCompletions:
+        @staticmethod
+        def create(**kwargs):
+            raise RuntimeError("stop-after-kwargs")
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class _FakeClient:
+        base_url = "http://127.0.0.1:20128/v1"
+        chat = _FakeChat()
+
+    monkeypatch.setattr(ac, "_build_call_kwargs", fake_build_call_kwargs)
+    monkeypatch.setattr(ac, "_get_cached_client", lambda *a, **k: (_FakeClient(), "cc/claude-opus-4-8"))
+
+    cfg = {"auxiliary": {"mcp": {
+        "provider": "custom", "model": "cc/claude-opus-4-8",
+        "base_url": "http://127.0.0.1:20128/v1", "api_key": "x",
+        "reasoning_effort": "high",
+    }}}
+
+    async def _run():
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            try:
+                await ac.async_call_llm(task="mcp", messages=[{"role": "user", "content": "hi"}])
+            except Exception:
+                pass
+
+    asyncio.run(_run())
+    assert captured.get("extra_body", {}).get("reasoning") == {"enabled": True, "effort": "high"}
