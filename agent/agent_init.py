@@ -1199,6 +1199,33 @@ def init_agent(
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)
 
+    # ── Hermes Memory System (local file/document indexing) ───────────────
+    # Initializes the laptop-aware memory index (SQLite FTS5) for
+    # file search, project awareness, and document recall.
+    # Falls back gracefully if config is missing or disabled.
+    agent._memory_system = None
+    try:
+        _mem_idx_cfg = _agent_cfg.get("memory_index", {})
+        if _mem_idx_cfg.get("enabled", True):
+            from agent.memory import MemoryManager as _HermesMemory
+            _mem_roots = _mem_idx_cfg.get("roots", [])
+            _mem_exclude = set(_mem_idx_cfg.get("exclude", []))
+            _mem_interval = int(_mem_idx_cfg.get("scan_interval_minutes", 30)) * 60
+            agent._memory_system = _HermesMemory(
+                roots=_mem_roots if _mem_roots else None,
+                exclude_patterns=_mem_exclude if _mem_exclude else None,
+                scan_interval_s=_mem_interval,
+            )
+            _mem_stats = agent._memory_system.initialize()
+            agent._memory_system.start_background_indexing()
+            _ra().logger.info(
+                "Hermes Memory System initialized: %d files indexed",
+                _mem_stats.get("files_added", 0),
+            )
+    except Exception as _mem_exc:
+        _ra().logger.warning("Hermes Memory System init failed (non-fatal): %s", _mem_exc)
+        agent._memory_system = None
+
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
     try:
