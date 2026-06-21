@@ -17,6 +17,32 @@ def test_coding_guidance_advertises_persistent_terminal_state():
     assert "instead of re-sourcing it before every test command" in cc.CODING_AGENT_GUIDANCE
 
 
+class TestUpgradedGuidance:
+    """Tests for the upgraded Pilar A CODING_AGENT_GUIDANCE content."""
+
+    def test_mentions_planning_discipline(self):
+        assert "Plan the work" in cc.CODING_AGENT_GUIDANCE or "petakan" in cc.CODING_AGENT_GUIDANCE
+        assert "todo" in cc.CODING_AGENT_GUIDANCE
+
+    def test_mentions_verification_loop(self):
+        assert "test" in cc.CODING_AGENT_GUIDANCE
+        assert "before claiming" in cc.CODING_AGENT_GUIDANCE
+        assert "Verify" in cc.CODING_AGENT_GUIDANCE
+
+    def test_mentions_root_cause_discipline(self):
+        assert "root" in cc.CODING_AGENT_GUIDANCE
+
+    def test_retains_edit_discipline(self):
+        assert "re-read" in cc.CODING_AGENT_GUIDANCE
+        assert "write_file" in cc.CODING_AGENT_GUIDANCE
+
+    def test_retains_existing_contract(self):
+        # These were in the original and must be preserved
+        assert "Terminal state persists across calls" in cc.CODING_AGENT_GUIDANCE
+        assert "Activate a virtualenv" in cc.CODING_AGENT_GUIDANCE
+        assert "instead of re-sourcing" in cc.CODING_AGENT_GUIDANCE
+
+
 def _git_init(path):
     env = {
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
