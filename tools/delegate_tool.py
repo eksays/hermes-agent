@@ -2741,6 +2741,90 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _inject_routing_model(cfg: dict) -> dict:
+    """If ``cfg`` has no explicit ``model``, inject the routing recommendation.
+
+    Returns the (possibly modified) config dict.
+    """
+    if cfg.get("model"):
+        return cfg  # explicit model already set — respect it
+
+    # Check if routing is active
+    try:
+        from hermes_cli.config import load_config as load_full_config
+
+        full = load_full_config()
+    except Exception:
+        return cfg
+
+    try:
+        routing = (full.get("coding") or {}).get("routing") or {}
+    except Exception:
+        return cfg
+
+    if not routing.get("enabled"):
+        return cfg
+
+    mode = str(routing.get("mode", "balanced")).strip().lower()
+
+    # Get current session model (from CLI_CONFIG or config)
+    current_model = None
+    try:
+        from cli import CLI_CONFIG
+
+        current_model = (CLI_CONFIG.get("model") or {}).get("default")
+    except Exception:
+        pass
+    if not current_model:
+        try:
+            from hermes_cli.config import load_config as lc
+
+            full2 = lc()
+            current_model = (full2.get("model") or {}).get("default")
+        except Exception:
+            pass
+
+    try:
+        from agent.model_router import recommend_coding_model
+        from hermes_cli.models import list_available_providers
+        from agent.coding_context import _load_all_candidates
+
+        avail = {p["id"] for p in list_available_providers() if p.get("authenticated")}
+    except Exception:
+        return cfg
+
+    force = str(routing.get("force", "")).strip() or None
+    if force and ":" in force:
+        parts = force.split(":", 1)
+        cfg["model"] = parts[1]
+        cfg["provider"] = parts[0]
+        return cfg
+
+    # Build exclude = current session model
+    exclude: set[str] = set()
+    if current_model and "/" in current_model:
+        exclude.add(current_model)
+
+    try:
+        choice = recommend_coding_model(
+            available_providers=avail,
+            all_candidate_models=_load_all_candidates,
+            mode=mode,
+            exclude=exclude,
+            only=set(str(v).strip() for v in (routing.get("only") or []) if v) or None,
+            ignore=set(str(v).strip() for v in (routing.get("ignore") or []) if v) or None,
+            min_context=int(routing.get("min_context", 32_000)) or 32_000,
+        )
+    except Exception:
+        return cfg
+
+    if choice is not None:
+        cfg["model"] = choice.model
+        cfg["provider"] = choice.provider
+
+    return cfg
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -2748,20 +2832,25 @@ def _load_config() -> dict:
     to the persistent config (hermes_cli/config.py load_config()) so that
     ``delegation.model`` / ``delegation.provider`` are picked up regardless
     of the entry point (CLI, gateway, cron).
+
+    When no explicit ``delegation.model`` is set AND the coding posture has
+    routing enabled, the model_router's recommendation is injected as the
+    default subagent model — so the agent gets the strongest available
+    coding model for delegated subtasks without writing any config.
     """
     try:
         from cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation") or {}
         if cfg:
-            return cfg
+            return _inject_routing_model(cfg)
     except Exception:
         pass
     try:
         from hermes_cli.config import load_config
 
         full = load_config()
-        return full.get("delegation") or {}
+        return _inject_routing_model(full.get("delegation") or {})
     except Exception:
         return {}
 
