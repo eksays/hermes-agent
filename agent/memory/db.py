@@ -476,6 +476,15 @@ class MemoryDB:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def get_file_by_id(self, file_id: int) -> Optional[Dict[str, Any]]:
+        """Return the file record for *file_id*, or ``None`` if not found."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM files WHERE id = ?", (file_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     def file_exists(self, path: str, checksum: str) -> bool:
         """Return ``True`` if a record with *path* and *checksum* exists."""
         with self._lock:
@@ -511,6 +520,12 @@ class MemoryDB:
         with self._lock:
             cursor = self._conn.execute("SELECT path FROM files ORDER BY path")
             return [row["path"] for row in cursor.fetchall()]
+
+    def get_all_file_records(self) -> List[Dict[str, Any]]:
+        """Return every file record as a list of dicts."""
+        with self._lock:
+            cursor = self._conn.execute("SELECT * FROM files ORDER BY id")
+            return [dict(row) for row in cursor.fetchall()]
 
     def remove_file(self, path: str) -> None:
         """Delete the file record at *path*.
@@ -553,6 +568,15 @@ class MemoryDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT * FROM projects WHERE root_path = ?", (root_path,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_project_by_id(self, project_id: int) -> Optional[Dict[str, Any]]:
+        """Return a project record by id, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM projects WHERE id = ?", (project_id,)
             )
             row = cursor.fetchone()
             return dict(row) if row else None
@@ -615,6 +639,15 @@ class MemoryDB:
             )
             return cursor.lastrowid
 
+    def get_git_repo_by_project(self, project_id: int) -> Optional[Dict[str, Any]]:
+        """Return the git_repo record for a project, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM git_repos WHERE project_id = ?", (project_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     def search_projects(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         if not query.strip():
             return []
@@ -632,6 +665,12 @@ class MemoryDB:
         with self._lock:
             cursor = self._conn.execute("SELECT root_path FROM projects")
             return [row["root_path"] for row in cursor.fetchall()]
+
+    def get_all_project_records(self) -> List[Dict[str, Any]]:
+        """Return every project record as a list of dicts."""
+        with self._lock:
+            cursor = self._conn.execute("SELECT * FROM projects ORDER BY id")
+            return [dict(row) for row in cursor.fetchall()]
 
     # ── Memory Facts ─────────────────────────────────────────────────────
 
@@ -665,6 +704,15 @@ class MemoryDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT * FROM memory_facts WHERE key = ?", (key,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_memory_fact_by_id(self, fact_id: int) -> Optional[Dict[str, Any]]:
+        """Return a memory fact by id, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM memory_facts WHERE id = ?", (fact_id,)
             )
             row = cursor.fetchone()
             return dict(row) if row else None
