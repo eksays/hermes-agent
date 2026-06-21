@@ -221,12 +221,6 @@ CREATE TABLE IF NOT EXISTS access_log (
     context TEXT DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS stale_config (
-    item_type TEXT NOT NULL PRIMARY KEY,
-    threshold_days INTEGER NOT NULL DEFAULT 14,
-    enabled INTEGER NOT NULL DEFAULT 1
-);
-
 CREATE TABLE IF NOT EXISTS doc_vectors (
     file_id INTEGER PRIMARY KEY,
     terms TEXT NOT NULL,
@@ -417,11 +411,6 @@ class MemoryDB:
                             item_id INTEGER NOT NULL,
                             accessed_at TEXT DEFAULT (datetime('now')),
                             context TEXT DEFAULT ''
-                        );
-                        CREATE TABLE IF NOT EXISTS stale_config (
-                            item_type TEXT NOT NULL PRIMARY KEY,
-                            threshold_days INTEGER NOT NULL DEFAULT 14,
-                            enabled INTEGER NOT NULL DEFAULT 1
                         );
                         CREATE TABLE IF NOT EXISTS doc_vectors (
                             file_id INTEGER PRIMARY KEY,
@@ -904,12 +893,15 @@ class MemoryDB:
         label: str,
         boost: float,
     ) -> None:
-        """Insert or replace a user boost record."""
+        """Insert or update a user boost record."""
         with self._lock:
             self._conn.execute(
                 """
-                INSERT OR REPLACE INTO user_boosts (item_type, item_id, label, boost)
+                INSERT INTO user_boosts (item_type, item_id, label, boost)
                 VALUES (?, ?, ?, ?)
+                ON CONFLICT(item_type, item_id) DO UPDATE SET
+                    label = excluded.label,
+                    boost = excluded.boost
                 """,
                 (item_type, item_id, label, boost),
             )
@@ -982,17 +974,23 @@ class MemoryDB:
         score: float,
         signals: str = "{}",
         boost: float = 1.0,
-    ) -> None:
-        """Insert or replace a scored item."""
+    ) -> int:
+        """Insert or update a scored item. Returns row id."""
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
-                INSERT OR REPLACE INTO scored_items
+                INSERT INTO scored_items
                     (item_type, item_id, score, signals, boost, last_scored_at)
                 VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(item_type, item_id) DO UPDATE SET
+                    score         = excluded.score,
+                    signals       = excluded.signals,
+                    boost         = excluded.boost,
+                    last_scored_at = datetime('now')
                 """,
                 (item_type, item_id, score, signals, boost),
             )
+            return cursor.lastrowid
 
     def get_scored_item(self, item_type: str, item_id: int) -> Optional[Dict[str, Any]]:
         """Return a scored item, or ``None``."""
@@ -1047,16 +1045,21 @@ class MemoryDB:
 
     # ── v5: Doc Vectors ───────────────────────────────────────────────────
 
-    def upsert_doc_vector(self, file_id: int, terms: str, total_terms: int) -> None:
-        """Insert or replace a document vector."""
+    def upsert_doc_vector(self, file_id: int, terms: str, total_terms: int) -> int:
+        """Insert or update a document vector. Returns row id."""
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
-                INSERT OR REPLACE INTO doc_vectors (file_id, terms, total_terms)
+                INSERT INTO doc_vectors (file_id, terms, total_terms)
                 VALUES (?, ?, ?)
+                ON CONFLICT(file_id) DO UPDATE SET
+                    terms       = excluded.terms,
+                    total_terms = excluded.total_terms,
+                    indexed_at  = datetime('now')
                 """,
                 (file_id, terms, total_terms),
             )
+            return cursor.lastrowid
 
     def get_doc_vector(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Return a document vector, or ``None``."""

@@ -38,7 +38,6 @@ def test_init_creates_tables(db_path):
         assert "user_boosts" in tables
         assert "access_log" in tables
         assert "doc_vectors" in tables
-        assert "stale_config" in tables
         # Verify schema version via raw connection
         conn = sqlite3.connect(db_path)
         try:
@@ -862,5 +861,56 @@ def test_get_all_doc_vector_ids(db_path):
         ids = db.get_all_doc_vector_ids()
         assert 1 in ids
         assert 2 in ids
+    finally:
+        db.close()
+
+
+# ── v5: Edge cases ─────────────────────────────────────────────────────────
+
+
+def test_search_scored_empty_query(db_path):
+    """search_scored with empty query returns []."""
+    db = MemoryDB(db_path)
+    try:
+        assert db.search_scored("") == []
+        assert db.search_scored("   ") == []
+    finally:
+        db.close()
+
+
+def test_get_top_scored_empty_type(db_path):
+    """get_top_scored for non-existent type returns []."""
+    db = MemoryDB(db_path)
+    try:
+        results = db.get_top_scored(item_type="nonexistent", limit=5)
+        assert results == []
+    finally:
+        db.close()
+
+
+def test_get_all_doc_vector_ids_empty(db_path):
+    """get_all_doc_vector_ids on empty table returns []."""
+    db = MemoryDB(db_path)
+    try:
+        assert db.get_all_doc_vector_ids() == []
+    finally:
+        db.close()
+
+
+def test_get_access_log_empty(db_path):
+    """get_access_log on empty table returns []."""
+    db = MemoryDB(db_path)
+    try:
+        entries = db.get_access_log(days=30)
+        assert entries == []
+    finally:
+        db.close()
+
+
+def test_remove_user_boost_nonexistent(db_path):
+    """remove_user_boost on non-existent key is a no-op."""
+    db = MemoryDB(db_path)
+    try:
+        db.remove_user_boost("file", 999)  # should not raise
     finally:
         db.close()
