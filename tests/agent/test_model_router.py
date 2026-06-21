@@ -3,8 +3,6 @@
 from dataclasses import dataclass
 from typing import List, Dict
 
-import pytest
-
 from agent.model_router import (
     CodingModelChoice,
     _score_coding_model,
@@ -95,8 +93,10 @@ class TestRecommendCodingModel:
             mode="economy",
         )
         assert result is not None
-        # Economy should pick cheapest with minimum capability threshold
-        assert result.score > 0
+        # Economy should pick cheapest viable with minimum capability threshold
+        assert result.score >= 0.4
+        # qwen/qwq-32b ($0.80/M) should be cheapest viable among stubs
+        assert "qwen" in result.model or "haiku" in result.model
 
     def test_returns_none_when_no_models(self):
         result = recommend_coding_model(

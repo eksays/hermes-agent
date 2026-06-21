@@ -55,7 +55,7 @@ def _score_coding_model(model) -> float:
     if not getattr(model, "tool_call", False):
         return 0.0
     status = getattr(model, "status", "") or ""
-    if status.lower() == "deprecated":
+    if status.strip().lower() == "deprecated":
         return 0.0
 
     score = 0.2  # baseline: tool_call = usable
@@ -134,6 +134,9 @@ def recommend_coding_model(
     except Exception as exc:
         logger.warning("model_router: all_candidate_models() raised %s", exc)
         catalog = {}
+
+    if catalog is None:
+        return None
 
     for prov in providers:
         models = catalog.get(prov, [])
