@@ -21,16 +21,16 @@ class TestUpgradedGuidance:
     """Tests for the upgraded Pilar A CODING_AGENT_GUIDANCE content."""
 
     def test_mentions_planning_discipline(self):
-        assert "Plan the work" in cc.CODING_AGENT_GUIDANCE or "petakan" in cc.CODING_AGENT_GUIDANCE
+        assert "Plan the work" in cc.CODING_AGENT_GUIDANCE
         assert "todo" in cc.CODING_AGENT_GUIDANCE
+        assert "smallest change" in cc.CODING_AGENT_GUIDANCE
 
     def test_mentions_verification_loop(self):
-        assert "test" in cc.CODING_AGENT_GUIDANCE
-        assert "before claiming" in cc.CODING_AGENT_GUIDANCE
-        assert "Verify" in cc.CODING_AGENT_GUIDANCE
+        assert "before claiming the work is done" in cc.CODING_AGENT_GUIDANCE
+        assert "Verify, and know when to stop" in cc.CODING_AGENT_GUIDANCE
 
     def test_mentions_root_cause_discipline(self):
-        assert "root" in cc.CODING_AGENT_GUIDANCE
+        assert "Fix root causes, not symptoms" in cc.CODING_AGENT_GUIDANCE
 
     def test_retains_edit_discipline(self):
         assert "re-read" in cc.CODING_AGENT_GUIDANCE
