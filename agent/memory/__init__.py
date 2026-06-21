@@ -13,6 +13,7 @@ from agent.memory.db import MemoryDB
 from agent.memory.crawler import MemoryCrawler
 from agent.memory.tools import MemoryManager as MemoryToolsFacade
 from agent.memory.preferences import PreferenceStore
+from agent.memory.scorer import Scorer
 from agent.memory import config as mem_config
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class MemoryManager:
         )
         self.facade = MemoryToolsFacade(self.db)
         self.preferences = PreferenceStore(self.db)
+        self.scorer = Scorer(self.db)
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
@@ -102,6 +104,12 @@ class MemoryManager:
                 expired = self.db.cleanup_expired_facts()
                 if expired:
                     logger.info("[memory] cleaned %d expired memory facts", expired)
+                try:
+                    score_result = self.scorer.run()
+                    if score_result["scored"]:
+                        logger.info("[memory] scored %d items", score_result["scored"])
+                except Exception as exc:
+                    logger.warning("[memory] scoring error: %s", exc)
             except Exception as exc:
                 logger.warning("[memory] background index error: %s", exc)
 
@@ -190,6 +198,10 @@ class MemoryManager:
         stats.update(self.crawler.crawl_projects())
         return stats
 
+    def run_scorer(self, force: bool = False) -> dict:
+        """Manually trigger scoring. Returns stats."""
+        return self.scorer.run()
+
     def tool_schemas(self) -> List[dict]:
         """Return all tool schemas for the agent registry."""
         return [
@@ -198,6 +210,11 @@ class MemoryManager:
             MemoryToolsFacade.recall_tool_schema(),
             MemoryToolsFacade.save_preference_tool_schema(),
             MemoryToolsFacade.forget_tool_schema(),
+            MemoryToolsFacade.suggest_tool_schema(),
+            MemoryToolsFacade.activity_tool_schema(),
+            MemoryToolsFacade.stale_tool_schema(),
+            MemoryToolsFacade.similar_tool_schema(),
+            MemoryToolsFacade.boost_tool_schema(),
             MemoryToolsFacade.index_tool_schema(),
             MemoryToolsFacade.status_tool_schema(),
         ]
