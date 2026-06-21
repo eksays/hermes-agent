@@ -504,7 +504,6 @@ class TestRoutingConfig:
         assert not any("Routing:" in b for b in blocks)
 
     def test_no_providers_returns_no_hint(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cc, "_HAS_PROVIDERS", True)
         _git_init(tmp_path)
         # Simulate no available providers by monkeypatching list_available_providers
         def _no_providers():

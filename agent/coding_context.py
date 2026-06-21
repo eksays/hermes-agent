@@ -219,10 +219,6 @@ CODING_AGENT_GUIDANCE = (
 
 # ── Routing (Pilar B) — config parsing + hint builder ──────────────────────
 
-_ROUTING_CONFIG_KEY = "coding.routing"
-_HAS_PROVIDERS: bool = False  # monkeypatch-able test flag; True = real env, False = routing won't try to query
-
-
 def _parse_coding_routing_config(config: Optional[dict]) -> dict:
     """Extract the ``coding.routing`` config block, normalised.
 
@@ -298,8 +294,9 @@ def _build_routing_block(
     if choice is None:
         return None
 
-    # Don't hint to route to the same model the session is already using
-    if session_model and choice.model in session_model:
+    # Don't hint to route to the same model the session is already using.
+    # Compare the full provider:model identifier to avoid substring false positives.
+    if session_model and f":{choice.model}" in session_model:
         return None
 
     return (
