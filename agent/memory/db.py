@@ -8,7 +8,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 _INIT_SQL = """
 PRAGMA journal_mode=WAL;
@@ -191,6 +191,48 @@ CREATE TRIGGER IF NOT EXISTS memory_facts_au AFTER UPDATE ON memory_facts BEGIN
     INSERT INTO memory_facts_fts(rowid, key, content)
     VALUES (new.id, new.key, new.content);
 END;
+
+-- v5: scoring & recommendations
+
+CREATE TABLE IF NOT EXISTS scored_items (
+    item_type TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    score REAL NOT NULL DEFAULT 0.0,
+    signals TEXT NOT NULL DEFAULT '{}',
+    boost REAL NOT NULL DEFAULT 1.0,
+    last_scored_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (item_type, item_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_boosts (
+    item_type TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    label TEXT DEFAULT '',
+    boost REAL NOT NULL DEFAULT 2.0,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (item_type, item_id)
+);
+
+CREATE TABLE IF NOT EXISTS access_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_type TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    accessed_at TEXT DEFAULT (datetime('now')),
+    context TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS stale_config (
+    item_type TEXT NOT NULL PRIMARY KEY,
+    threshold_days INTEGER NOT NULL DEFAULT 14,
+    enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS doc_vectors (
+    file_id INTEGER PRIMARY KEY,
+    terms TEXT NOT NULL,
+    total_terms INTEGER DEFAULT 0,
+    indexed_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -348,6 +390,45 @@ class MemoryDB:
                             VALUES ('delete', old.id, old.key, old.content);
                             INSERT INTO memory_facts_fts(rowid, key, content)
                             VALUES (new.id, new.key, new.content); END;
+                    """)
+                # v4→v5: scoring tables
+                if version < 5:
+                    self._conn.executescript("""
+                        CREATE TABLE IF NOT EXISTS scored_items (
+                            item_type TEXT NOT NULL,
+                            item_id INTEGER NOT NULL,
+                            score REAL NOT NULL DEFAULT 0.0,
+                            signals TEXT NOT NULL DEFAULT '{}',
+                            boost REAL NOT NULL DEFAULT 1.0,
+                            last_scored_at TEXT DEFAULT (datetime('now')),
+                            PRIMARY KEY (item_type, item_id)
+                        );
+                        CREATE TABLE IF NOT EXISTS user_boosts (
+                            item_type TEXT NOT NULL,
+                            item_id INTEGER NOT NULL,
+                            label TEXT DEFAULT '',
+                            boost REAL NOT NULL DEFAULT 2.0,
+                            created_at TEXT DEFAULT (datetime('now')),
+                            PRIMARY KEY (item_type, item_id)
+                        );
+                        CREATE TABLE IF NOT EXISTS access_log (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            item_type TEXT NOT NULL,
+                            item_id INTEGER NOT NULL,
+                            accessed_at TEXT DEFAULT (datetime('now')),
+                            context TEXT DEFAULT ''
+                        );
+                        CREATE TABLE IF NOT EXISTS stale_config (
+                            item_type TEXT NOT NULL PRIMARY KEY,
+                            threshold_days INTEGER NOT NULL DEFAULT 14,
+                            enabled INTEGER NOT NULL DEFAULT 1
+                        );
+                        CREATE TABLE IF NOT EXISTS doc_vectors (
+                            file_id INTEGER PRIMARY KEY,
+                            terms TEXT NOT NULL,
+                            total_terms INTEGER DEFAULT 0,
+                            indexed_at TEXT DEFAULT (datetime('now'))
+                        );
                     """)
                 self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
@@ -807,6 +888,193 @@ class MemoryDB:
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
             )
             return [row["name"] for row in cursor.fetchall()]
+
+    def get_user_version(self) -> int:
+        """Return the current schema version (user_version pragma)."""
+        with self._lock:
+            cursor = self._conn.execute("PRAGMA user_version")
+            return cursor.fetchone()[0]
+
+    # ── v5: Scoring & Boosts ──────────────────────────────────────────────
+
+    def set_user_boost(
+        self,
+        item_type: str,
+        item_id: int,
+        label: str,
+        boost: float,
+    ) -> None:
+        """Insert or replace a user boost record."""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO user_boosts (item_type, item_id, label, boost)
+                VALUES (?, ?, ?, ?)
+                """,
+                (item_type, item_id, label, boost),
+            )
+
+    def get_user_boost(self, item_type: str, item_id: int) -> Optional[Dict[str, Any]]:
+        """Return a user boost record, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM user_boosts WHERE item_type = ? AND item_id = ?",
+                (item_type, item_id),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_all_boosts(self) -> List[Dict[str, Any]]:
+        """Return all user boost records."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM user_boosts ORDER BY item_type, item_id"
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def remove_user_boost(self, item_type: str, item_id: int) -> None:
+        """Delete a user boost record."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM user_boosts WHERE item_type = ? AND item_id = ?",
+                (item_type, item_id),
+            )
+
+    # ── v5: Access Log ────────────────────────────────────────────────────
+
+    def log_access(self, item_type: str, item_id: int, context: str = "") -> None:
+        """Insert an access log entry."""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO access_log (item_type, item_id, context)
+                VALUES (?, ?, ?)
+                """,
+                (item_type, item_id, context),
+            )
+
+    def get_access_log(
+        self,
+        days: int = 7,
+        item_type: Optional[str] = None,
+        item_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return access log entries, optionally filtered by type/item and day range."""
+        with self._lock:
+            conditions = ["accessed_at >= datetime('now', ?)"]
+            params = [f"-{days} days"]
+            if item_type is not None:
+                conditions.append("item_type = ?")
+                params.append(item_type)
+            if item_id is not None:
+                conditions.append("item_id = ?")
+                params.append(item_id)
+            sql = f"SELECT * FROM access_log WHERE {' AND '.join(conditions)} ORDER BY accessed_at DESC"
+            cursor = self._conn.execute(sql, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    # ── v5: Scored Items ──────────────────────────────────────────────────
+
+    def upsert_scored_item(
+        self,
+        item_type: str,
+        item_id: int,
+        score: float,
+        signals: str = "{}",
+        boost: float = 1.0,
+    ) -> None:
+        """Insert or replace a scored item."""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO scored_items
+                    (item_type, item_id, score, signals, boost, last_scored_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (item_type, item_id, score, signals, boost),
+            )
+
+    def get_scored_item(self, item_type: str, item_id: int) -> Optional[Dict[str, Any]]:
+        """Return a scored item, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM scored_items WHERE item_type = ? AND item_id = ?",
+                (item_type, item_id),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_top_scored(
+        self,
+        item_type: str,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Return the top scored items for a given type, sorted by score descending."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM scored_items
+                WHERE item_type = ?
+                ORDER BY score DESC
+                LIMIT ?
+                """,
+                (item_type, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def search_scored(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Search scored items by text in the signals field."""
+        if not query.strip():
+            return []
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM scored_items
+                WHERE signals LIKE ?
+                LIMIT ?
+                """,
+                (f"%{query}%", limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def remove_scored_items_by_type(self, item_type: str) -> None:
+        """Delete all scored items of a given type."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM scored_items WHERE item_type = ?",
+                (item_type,),
+            )
+
+    # ── v5: Doc Vectors ───────────────────────────────────────────────────
+
+    def upsert_doc_vector(self, file_id: int, terms: str, total_terms: int) -> None:
+        """Insert or replace a document vector."""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO doc_vectors (file_id, terms, total_terms)
+                VALUES (?, ?, ?)
+                """,
+                (file_id, terms, total_terms),
+            )
+
+    def get_doc_vector(self, file_id: int) -> Optional[Dict[str, Any]]:
+        """Return a document vector, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM doc_vectors WHERE file_id = ?",
+                (file_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_all_doc_vector_ids(self) -> List[int]:
+        """Return all indexed file ids from doc_vectors."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT file_id FROM doc_vectors ORDER BY file_id"
+            )
+            return [row["file_id"] for row in cursor.fetchall()]
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 

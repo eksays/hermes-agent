@@ -22,7 +22,7 @@ def db_path() -> str:
 
 
 def test_init_creates_tables(db_path):
-    """MemoryDB creates tables and sets user_version = 4."""
+    """MemoryDB creates tables and sets user_version = 5."""
     db = MemoryDB(db_path)
     try:
         tables = db.get_table_names()
@@ -33,12 +33,18 @@ def test_init_creates_tables(db_path):
         assert "memory_facts" in tables
         assert "memory_facts_fts" in tables
         assert "user_preferences" in tables
+        # Verify v5 tables also exist
+        assert "scored_items" in tables
+        assert "user_boosts" in tables
+        assert "access_log" in tables
+        assert "doc_vectors" in tables
+        assert "stale_config" in tables
         # Verify schema version via raw connection
         conn = sqlite3.connect(db_path)
         try:
             cur = conn.execute("PRAGMA user_version")
             version = cur.fetchone()[0]
-            assert version == 4
+            assert version == 5
         finally:
             conn.close()
     finally:
@@ -688,5 +694,173 @@ def test_get_all_preferences_returns_list(db_path):
         keys = [p["key"] for p in all_prefs]
         assert "p1" in keys
         assert "p2" in keys
+    finally:
+        db.close()
+
+
+# ── v5: Scoring tables ──────────────────────────────────────────────────────
+
+
+def test_init_creates_v5_tables(db_path):
+    """v5 init creates scored_items, user_boosts, access_log, doc_vectors."""
+    db = MemoryDB(db_path)
+    try:
+        tables = db.get_table_names()
+        assert "scored_items" in tables
+        assert "user_boosts" in tables
+        assert "access_log" in tables
+        assert "doc_vectors" in tables
+        assert db.get_user_version() == 5
+    finally:
+        db.close()
+
+
+def test_set_user_boost_creates(db_path):
+    """set_user_boost inserts a boost record."""
+    db = MemoryDB(db_path)
+    try:
+        db.set_user_boost("file", 1, "important", 2.5)
+        boosts = db.get_all_boosts()
+        assert len(boosts) == 1
+        assert boosts[0]["boost"] == 2.5
+    finally:
+        db.close()
+
+
+def test_set_user_boost_updates(db_path):
+    """set_user_boost on existing key updates boost value."""
+    db = MemoryDB(db_path)
+    try:
+        db.set_user_boost("file", 1, "x", 1.0)
+        db.set_user_boost("file", 1, "x", 3.0)
+        boosts = db.get_all_boosts()
+        assert boosts[0]["boost"] == 3.0
+    finally:
+        db.close()
+
+
+def test_get_boost_returns_none_for_missing(db_path):
+    """get_user_boost returns None when no boost set."""
+    db = MemoryDB(db_path)
+    try:
+        assert db.get_user_boost("file", 999) is None
+    finally:
+        db.close()
+
+
+def test_remove_boost_deletes(db_path):
+    """remove_user_boost deletes a boost record."""
+    db = MemoryDB(db_path)
+    try:
+        db.set_user_boost("file", 1, "x", 2.0)
+        db.remove_user_boost("file", 1)
+        assert db.get_user_boost("file", 1) is None
+    finally:
+        db.close()
+
+
+def test_log_access_creates_entry(db_path):
+    """log_access inserts an access log entry."""
+    db = MemoryDB(db_path)
+    try:
+        db.log_access("file", 1, "disk_access")
+        entries = db.get_access_log(days=30)
+        assert len(entries) >= 1
+    finally:
+        db.close()
+
+
+def test_get_access_log_respects_days(db_path):
+    """get_access_log filters by day range."""
+    db = MemoryDB(db_path)
+    try:
+        db.log_access("file", 1, "chat_mention")
+        entries = db.get_access_log(days=0)
+        assert all(e["item_type"] == "file" for e in entries)
+    finally:
+        db.close()
+
+
+def test_upsert_scored_item(db_path):
+    """upsert_scored_item inserts or updates a scored item."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_scored_item("file", 1, 0.85, '{"recency":0.8}')
+        item = db.get_scored_item("file", 1)
+        assert item is not None
+        assert abs(item["score"] - 0.85) < 0.01
+    finally:
+        db.close()
+
+
+def test_get_top_scored(db_path):
+    """get_top_scored returns items sorted by score desc."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_scored_item("file", 1, 0.5, "{}")
+        db.upsert_scored_item("file", 2, 1.0, "{}")
+        db.upsert_scored_item("project", 1, 0.8, "{}")
+        top = db.get_top_scored(item_type="file", limit=5)
+        assert len(top) == 2
+        assert top[0]["item_id"] == 2  # highest score first
+    finally:
+        db.close()
+
+
+def test_get_scored_item_nonexistent(db_path):
+    """get_scored_item returns None for missing item."""
+    db = MemoryDB(db_path)
+    try:
+        assert db.get_scored_item("file", 999) is None
+    finally:
+        db.close()
+
+
+def test_search_scored_by_query(db_path):
+    """search_scored returns items matching a text query in signals."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_scored_item("project", 1, 0.9, '{"name":"hermes-agent"}')
+        db.upsert_scored_item("project", 2, 0.7, '{"name":"paperclip"}')
+        results = db.search_scored("hermes")
+        assert len(results) >= 1
+    finally:
+        db.close()
+
+
+def test_remove_scored_items_by_type(db_path):
+    """remove_scored_items_by_type cleans up for deleted files."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_scored_item("file", 1, 0.5, "{}")
+        db.upsert_scored_item("project", 2, 0.8, "{}")
+        db.remove_scored_items_by_type("file")
+        assert db.get_scored_item("file", 1) is None
+        assert db.get_scored_item("project", 2) is not None
+    finally:
+        db.close()
+
+
+def test_upsert_doc_vector(db_path):
+    """upsert_doc_vector stores a sparse TF-IDF vector."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_doc_vector(1, '{"term1":0.5,"term2":0.3}', 2)
+        vec = db.get_doc_vector(1)
+        assert vec is not None
+        assert '"term1"' in vec["terms"]
+    finally:
+        db.close()
+
+
+def test_get_all_doc_vector_ids(db_path):
+    """get_all_doc_vector_ids returns all indexed file ids."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_doc_vector(1, "{}", 0)
+        db.upsert_doc_vector(2, "{}", 0)
+        ids = db.get_all_doc_vector_ids()
+        assert 1 in ids
+        assert 2 in ids
     finally:
         db.close()
