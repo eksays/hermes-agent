@@ -8,6 +8,9 @@ function calling.
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from agent.memory.config import DEFAULT_SEARCH_LIMIT
@@ -248,6 +251,122 @@ class MemoryManager:
         except Exception as exc:
             return {"success": False, "key": key, "error": str(exc)}
 
+    def suggest(self, query: str = "", limit: int = 5) -> List[Dict[str, Any]]:
+        """Return top scored/relevant items.
+
+        If no scored_items exist (cold start), falls back to recently
+        modified files sorted by recency.
+        """
+        if query and query.strip():
+            sanitised = sanitize_query(query)
+            if not sanitised:
+                return []
+            try:
+                return self.db.search_scored(sanitised, limit=limit)
+            except Exception:
+                pass
+
+        try:
+            results = self.db.get_top_scored(limit=limit)
+            if results:
+                for r in results:
+                    r["_type"] = r["item_type"]
+                return results
+        except Exception:
+            pass
+
+        # Cold start: recently modified files
+        try:
+            recent = []
+            for row in self.db.get_all_file_records():
+                recent.append({
+                    "_type": "file",
+                    "path": row.get("path", ""),
+                    "filename": row.get("filename", ""),
+                    "modified_at": row.get("modified_at", ""),
+                })
+            recent.sort(key=lambda r: r.get("modified_at", "") or "", reverse=True)
+            return recent[:limit]
+        except Exception:
+            return []
+
+    def activity(self, days: int = 7) -> Dict[str, Any]:
+        """Return activity statistics."""
+        try:
+            entries = self.db.get_access_log(days=days)
+            file_ids = set()
+            for e in entries:
+                if e["item_type"] == "file":
+                    file_ids.add(e["item_id"])
+            stats = self.db.get_stats()
+            return {
+                "total_files_accessed": len(file_ids),
+                "total_events": len(entries),
+                "total_indexed": stats.get("total_files", 0),
+            }
+        except Exception:
+            return {"total_files_accessed": 0, "total_events": 0, "total_indexed": 0}
+
+    def stale(self, days: int = 14) -> List[Dict[str, Any]]:
+        """Return files not modified for *days*."""
+        items: List[Dict[str, Any]] = []
+        try:
+            from agent.memory import config as memcfg
+            cutoff = (datetime.now(timezone.utc) -
+                      timedelta(days=days)).isoformat()
+            for row in self.db.get_files_older_than(cutoff, limit=50):
+                items.append({
+                    "type": "file",
+                    "path": row.get("path", ""),
+                    "filename": row.get("filename", ""),
+                    "last_modified": row.get("modified_at", ""),
+                    "days_idle": days,
+                })
+        except Exception:
+            pass
+        return items
+
+    def similar(self, path: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Find files similar to *path* using TF-IDF.
+
+        Builds the TF-IDF index on first call. Returns empty list if
+        the file cannot be read or no similar files found.
+        """
+        try:
+            from agent.memory.similarity import TfidfIndex
+            idx = TfidfIndex()
+            from agent.memory import config as memcfg
+            for root in memcfg.DEFAULT_ROOTS:
+                if os.path.isdir(root):
+                    idx.build_from_directory(root)
+                    break
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except Exception:
+                return []
+            results = idx.query(text, limit=limit)
+            return [
+                {"path": fp, "similarity": round(sim, 4)}
+                for fp, sim in results
+            ]
+        except Exception:
+            return []
+
+    def boost(
+        self,
+        item_type: str,
+        item_id: int,
+        label: str = "",
+        multiplier: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Set a manual importance boost on an item."""
+        try:
+            self.db.set_user_boost(item_type, item_id, label, multiplier)
+            return {"success": True, "item_type": item_type, "item_id": item_id}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     def save_preference(
         self,
         key: str,
@@ -485,6 +604,93 @@ class MemoryManager:
                 "parameters": {
                     "type": "object",
                     "properties": {},
+                },
+            },
+        }
+
+    @staticmethod
+    def suggest_tool_schema() -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_suggest",
+                "description": "Return top recommendations: relevant files, projects, and facts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Optional search to narrow."},
+                        "limit": {"type": "integer", "description": "Max results.", "default": 5},
+                    },
+                },
+            },
+        }
+
+    @staticmethod
+    def activity_tool_schema() -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_activity",
+                "description": "Show activity statistics — files accessed, events logged.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "days": {"type": "integer", "description": "Lookback days.", "default": 7},
+                    },
+                },
+            },
+        }
+
+    @staticmethod
+    def stale_tool_schema() -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_stale",
+                "description": "Find files not modified for N days.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "days": {"type": "integer", "description": "Idle threshold.", "default": 14},
+                    },
+                },
+            },
+        }
+
+    @staticmethod
+    def similar_tool_schema() -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_similar",
+                "description": "Find files with similar content using TF-IDF.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path to find matches for."},
+                        "limit": {"type": "integer", "description": "Max results.", "default": 5},
+                    },
+                    "required": ["path"],
+                },
+            },
+        }
+
+    @staticmethod
+    def boost_tool_schema() -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_boost",
+                "description": "Mark item as important (boosts recommendation score).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_type": {"type": "string", "enum": ["file", "project", "fact"], "description": "Item type."},
+                        "item_id": {"type": "integer", "description": "Item database id."},
+                        "label": {"type": "string", "description": "Optional label."},
+                        "multiplier": {"type": "number", "description": "Score multiplier.", "default": 2.0},
+                    },
+                    "required": ["item_type", "item_id"],
                 },
             },
         }

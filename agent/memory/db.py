@@ -527,6 +527,15 @@ class MemoryDB:
             cursor = self._conn.execute("SELECT * FROM files ORDER BY id")
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_files_older_than(self, cutoff: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return file records with modified_at older than *cutoff* (ISO format string)."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM files WHERE modified_at < ? ORDER BY modified_at ASC LIMIT ?",
+                (cutoff, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
     def remove_file(self, path: str) -> None:
         """Delete the file record at *path*.
 
@@ -1052,20 +1061,33 @@ class MemoryDB:
 
     def get_top_scored(
         self,
-        item_type: str,
+        item_type: Optional[str] = None,
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
-        """Return the top scored items for a given type, sorted by score descending."""
+        """Return the top scored items, sorted by score descending.
+
+        If *item_type* is ``None``, returns top scored items across all types.
+        """
         with self._lock:
-            cursor = self._conn.execute(
-                """
-                SELECT * FROM scored_items
-                WHERE item_type = ?
-                ORDER BY score DESC
-                LIMIT ?
-                """,
-                (item_type, limit),
-            )
+            if item_type is not None:
+                cursor = self._conn.execute(
+                    """
+                    SELECT * FROM scored_items
+                    WHERE item_type = ?
+                    ORDER BY score DESC
+                    LIMIT ?
+                    """,
+                    (item_type, limit),
+                )
+            else:
+                cursor = self._conn.execute(
+                    """
+                    SELECT * FROM scored_items
+                    ORDER BY score DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
             return [dict(row) for row in cursor.fetchall()]
 
     def search_scored(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:

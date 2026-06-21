@@ -487,3 +487,91 @@ def test_remember_from_message_no_pattern():
         mm.shutdown()
     finally:
         _cleanup(path, db)
+
+
+# ── Scoring & Recommendation tools ────────────────────────────────────────────
+
+
+def test_memory_suggest_returns_results():
+    """suggest() returns scored items or empty list."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        db.upsert_file("/test/a.py", "a.py", ".py", 100,
+                       "2026-06-21T00:00:00", "code", "a")
+        db.set_user_boost("file", 1, "favorite", 2.0)
+        results = mgr.suggest("", limit=5)
+        assert isinstance(results, list)
+    finally:
+        _cleanup(path, db)
+
+
+def test_memory_activity_returns_stats():
+    """activity() returns activity dict."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        db.log_access("file", 1, "chat_mention")
+        activity = mgr.activity(days=7)
+        assert "total_files_accessed" in activity
+    finally:
+        _cleanup(path, db)
+
+
+def test_memory_stale_detects_old_items():
+    """stale() returns list of old items."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        db.upsert_file("/test/old.py", "old.py", ".py", 100,
+                       "2020-01-01T00:00:00", "code", "old")
+        stale = mgr.stale(days=30)
+        assert isinstance(stale, list)
+    finally:
+        _cleanup(path, db)
+
+
+def test_memory_boost_sets_boost():
+    """boost() sets user boost for a file."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        db.upsert_file("/test/boost_me.py", "boost_me.py", ".py", 100,
+                       "2026-06-21T00:00:00", "code", "boost")
+        result = mgr.boost("file", 1, "important", 2.5)
+        assert result["success"] is True
+        boost = db.get_user_boost("file", 1)
+        assert boost is not None
+        assert abs(boost["boost"] - 2.5) < 0.01
+    finally:
+        _cleanup(path, db)
+
+
+def test_suggest_tool_schema():
+    """suggest_tool_schema returns OpenAI format."""
+    schema = MemoryManager.suggest_tool_schema()
+    assert schema["function"]["name"] == "memory_suggest"
+
+
+def test_activity_tool_schema():
+    """activity_tool_schema returns OpenAI format."""
+    schema = MemoryManager.activity_tool_schema()
+    assert schema["function"]["name"] == "memory_activity"
+
+
+def test_stale_tool_schema():
+    """stale_tool_schema returns OpenAI format."""
+    schema = MemoryManager.stale_tool_schema()
+    assert schema["function"]["name"] == "memory_stale"
+
+
+def test_similar_tool_schema():
+    """similar_tool_schema returns OpenAI format."""
+    schema = MemoryManager.similar_tool_schema()
+    assert schema["function"]["name"] == "memory_similar"
+
+
+def test_boost_tool_schema():
+    """boost_tool_schema returns OpenAI format."""
+    schema = MemoryManager.boost_tool_schema()
+    assert schema["function"]["name"] == "memory_boost"
