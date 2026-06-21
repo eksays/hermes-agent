@@ -475,3 +475,42 @@ class TestDetection:
     def test_bare_dir_is_not_coding(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+
+
+# ── routing config (Pilar B) ─────────────────────────────────────────────────
+
+
+class TestRoutingConfig:
+    def test_parse_routing_disabled_by_default(self):
+        cfg = cc._parse_coding_routing_config({})
+        assert cfg["enabled"] is False
+        assert cfg["mode"] == "balanced"
+
+    def test_parse_routing_parses_enabled(self):
+        cfg = cc._parse_coding_routing_config({"coding": {"routing": {"enabled": True}}})
+        assert cfg["enabled"] is True
+
+    def test_parse_routing_parses_force(self):
+        cfg = cc._parse_coding_routing_config(
+            {"coding": {"routing": {"force": "anthropic:claude-sonnet-4.6"}}}
+        )
+        assert cfg["force"] == "anthropic:claude-sonnet-4.6"
+
+    def test_routing_hidden_when_routing_off(self, tmp_path):
+        # No hint block when routing is not enabled
+        _git_init(tmp_path)
+        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "on"}})
+        blocks = mode.system_blocks()
+        assert not any("Routing:" in b for b in blocks)
+
+    def test_no_providers_returns_no_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cc, "_HAS_PROVIDERS", True)
+        _git_init(tmp_path)
+        # Simulate no available providers by monkeypatching list_available_providers
+        def _no_providers():
+            return []
+        monkeypatch.setattr("hermes_cli.models.list_available_providers", _no_providers)
+        cfg = {"agent": {"coding_context": "on"}, "coding": {"routing": {"enabled": True}}}
+        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config=cfg)
+        blocks = mode.system_blocks()
+        assert not any("Routing:" in b for b in blocks)

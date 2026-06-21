@@ -56,7 +56,7 @@ import logging
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -215,6 +215,140 @@ CODING_AGENT_GUIDANCE = (
     "`git branch` before relying on it. Be concise: lead with the change or "
     "answer, not a preamble."
 )
+
+
+# ── Routing (Pilar B) — config parsing + hint builder ──────────────────────
+
+_ROUTING_CONFIG_KEY = "coding.routing"
+_HAS_PROVIDERS: bool = False  # monkeypatch-able test flag; True = real env, False = routing won't try to query
+
+
+def _parse_coding_routing_config(config: Optional[dict]) -> dict:
+    """Extract the ``coding.routing`` config block, normalised.
+
+    Returns a dict with keys: enabled, mode, force, only, ignore, min_context.
+    Every key has a valid default.
+    """
+    raw: dict = {}
+    try:
+        if config:
+            coding = config.get("coding") or {}
+            raw = coding.get("routing") or {}
+    except Exception:
+        pass
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "enabled": bool(raw.get("enabled", False)),
+        "mode": str(raw.get("mode", "balanced")).strip().lower(),
+        "force": str(raw.get("force", "")).strip() or None,
+        "only": set(str(v).strip() for v in (raw.get("only") or []) if v),
+        "ignore": set(str(v).strip() for v in (raw.get("ignore") or []) if v),
+        "min_context": int(raw.get("min_context", 32_000)) or 32_000,
+    }
+
+
+def _build_routing_block(
+    session_model: Optional[str],
+    routing_cfg: dict,
+) -> Optional[str]:
+    """Build the routing hint block for the system prompt.
+
+    Returns ``None`` when routing is off, no recommendation, or the
+    recommendation equals the session model (no useful hint to give).
+
+    The returned string is a short paragraph the model can act on:
+    it tells the model which provider:model to ``delegate_task`` to for
+    coding-heavy subtasks.
+    """
+    if not routing_cfg.get("enabled"):
+        return None
+
+    from agent.model_router import recommend_coding_model
+
+    # Build exclude set: the session model itself (no self-routing)
+    exclude: set[str] = set()
+    if session_model:
+        exclude.add(session_model)
+
+    try:
+        from hermes_cli.models import list_available_providers
+        avail = {p["id"] for p in list_available_providers() if p.get("authenticated")}
+    except Exception:
+        return None
+
+    force = routing_cfg.get("force")
+    if force and isinstance(force, str) and ":" in force:
+        return (
+            f"Routing: coding-heavy subtasks are routed to `{force}` "
+            f"(force-set in config). Use `delegate_task` for complex "
+            f"implementation work; the subagent automatically gets this model."
+        )
+
+    choice = recommend_coding_model(
+        available_providers=avail,
+        all_candidate_models=_load_all_candidates,
+        mode=str(routing_cfg.get("mode", "balanced")),
+        exclude=exclude,
+        only=routing_cfg.get("only") or None,
+        ignore=routing_cfg.get("ignore") or None,
+        min_context=int(routing_cfg.get("min_context", 32_000)),
+    )
+
+    if choice is None:
+        return None
+
+    # Don't hint to route to the same model the session is already using
+    if session_model and choice.model in session_model:
+        return None
+
+    return (
+        f"Routing: for complex implementation work, delegate to "
+        f"`{choice.provider}:{choice.model}` via `delegate_task` — "
+        f"it is the best coding model available ({choice.reason}). "
+        f"Simple edits can stay in this session."
+    )
+
+
+def _load_all_candidates() -> dict:
+    """Load candidate models from models.dev for every known provider.
+
+    This is the production callback passed to ``recommend_coding_model``.
+    """
+    from agent.models_dev import PROVIDER_TO_MODELS_DEV, fetch_models_dev, get_model_info
+
+    try:
+        data = fetch_models_dev()
+    except Exception:
+        data = {}
+
+    from hermes_cli.models import CANONICAL_PROVIDERS
+
+    result: dict = {}
+    for prov_entry in CANONICAL_PROVIDERS:
+        pid = prov_entry.slug
+        mdev_id = PROVIDER_TO_MODELS_DEV.get(pid)
+        if not mdev_id:
+            continue
+        provider_data = data.get(mdev_id)
+        if not isinstance(provider_data, dict):
+            continue
+        models_raw = provider_data.get("models")
+        if not isinstance(models_raw, dict):
+            continue
+        candidates = []
+        for mid, entry in models_raw.items():
+            if not isinstance(entry, dict):
+                continue
+            if not entry.get("tool_call", False):
+                continue
+            info = get_model_info(pid, mid)
+            if info is not None:
+                candidates.append(info)
+        if candidates:
+            result[pid] = candidates
+
+    return result
 
 
 # ── Context profiles (declarative posture definitions) ──────────────────────
@@ -405,6 +539,10 @@ class RuntimeMode:
     # only to steer edit-format guidance toward the model's family — see
     # ``_edit_format_line``. Fixed for the session, so cache-safe.
     model: Optional[str] = None
+    # The original config dict (stored for lazy Pilar B routing evaluation
+    # in system_blocks()). Not part of equality or hash — only system_blocks()
+    # reads it.
+    _config: Optional[dict] = field(default=None, compare=False, hash=False, repr=False)
 
     @property
     def kind(self) -> str:
@@ -451,6 +589,13 @@ class RuntimeMode:
         workspace = build_coding_workspace_block(self.cwd)
         if workspace:
             blocks.append(workspace)
+        # Pilar B: routing hint (only when routing is enabled and a recommendation exists)
+        routing_block = _build_routing_block(
+            session_model=self.model,
+            routing_cfg=_parse_coding_routing_config(self._config),
+        )
+        if routing_block:
+            blocks.append(routing_block)
         return blocks
 
     def compact_skill_categories(self) -> frozenset[str]:
@@ -503,6 +648,7 @@ def resolve_runtime_mode(
         cwd=resolved_cwd,
         config_mode=mode,
         model=model,
+        _config=config,
     )
 
 
