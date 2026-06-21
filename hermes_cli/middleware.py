@@ -234,7 +234,15 @@ def _has_middleware(kind: str) -> bool:
 def _get_middleware_callbacks(kind: str) -> List[Callable]:
     from hermes_cli.plugins import get_plugin_manager
 
-    return list(get_plugin_manager()._middleware.get(kind, []))
+    # Defensive getattr: during a plugin reload/discovery race the singleton can
+    # be observed mid-construction (before ``_middleware`` is bound), which once
+    # surfaced as ``'PluginManager' object has no attribute '_middleware'`` and
+    # failed a whole API turn. Mirror the guard already used by has_middleware().
+    manager = get_plugin_manager()
+    middleware = getattr(manager, "_middleware", None)
+    if not isinstance(middleware, dict):
+        return []
+    return list(middleware.get(kind, []))
 
 
 def _run_execution_chain(

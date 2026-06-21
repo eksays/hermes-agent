@@ -501,6 +501,185 @@ class TestRoleManagement:
 
 
 # ---------------------------------------------------------------------------
+# Actions: channel management (create/edit/move/delete + permissions)
+# ---------------------------------------------------------------------------
+
+class TestCreateCategory:
+    @patch("tools.discord_tool._discord_request")
+    def test_create_category(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "900", "name": "NEW CAT", "type": 4}
+        result = json.loads(discord_admin_handler(
+            action="create_category", guild_id="111", name="NEW CAT",
+        ))
+        assert result["success"] is True
+        assert result["channel_id"] == "900"
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "NEW CAT", "type": 4},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_category_with_position(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "901", "name": "CAT2", "type": 4}
+        json.loads(discord_admin_handler(
+            action="create_category", guild_id="111", name="CAT2", position=3,
+        ))
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "CAT2", "type": 4, "position": 3},
+        )
+
+
+class TestCreateChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_create_text_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "950", "name": "general", "type": 0}
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="general",
+        ))
+        assert result["success"] is True
+        assert result["channel_id"] == "950"
+        # Defaults to text channel (type 0)
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "general", "type": 0},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_voice_channel_under_category(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "951", "name": "Voice", "type": 2}
+        json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="Voice",
+            channel_type="voice", parent_id="900", topic="hi", position=1,
+        ))
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "Voice", "type": 2, "parent_id": "900", "topic": "hi", "position": 1},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_invalid_type(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="x", channel_type="bogus",
+        ))
+        assert "error" in result
+        mock_req.assert_not_called()
+
+
+class TestEditChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_channel_partial_body(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "11", "name": "renamed", "type": 0}
+        result = json.loads(discord_admin_handler(
+            action="edit_channel", channel_id="11", name="renamed",
+        ))
+        assert result["success"] is True
+        # Only provided fields go in the PATCH body
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/11", "test-token", body={"name": "renamed"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_channel_topic_and_slowmode(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "11", "name": "c", "type": 0}
+        json.loads(discord_admin_handler(
+            action="edit_channel", channel_id="11", topic="new topic",
+            rate_limit_per_user=10,
+        ))
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/11", "test-token",
+            body={"topic": "new topic", "rate_limit_per_user": 10},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_channel_no_fields(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="edit_channel", channel_id="11",
+        ))
+        assert "error" in result
+        mock_req.assert_not_called()
+
+
+class TestMoveChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_move_channel_to_category(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "11", "name": "c", "type": 0, "parent_id": "900"}
+        result = json.loads(discord_admin_handler(
+            action="move_channel", channel_id="11", parent_id="900", position=2,
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/11", "test-token",
+            body={"parent_id": "900", "position": 2},
+        )
+
+
+class TestDeleteChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_delete_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "11", "name": "gone"}
+        result = json.loads(discord_admin_handler(
+            action="delete_channel", channel_id="11",
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with("DELETE", "/channels/11", "test-token")
+
+
+class TestSetChannelPermission:
+    @patch("tools.discord_tool._discord_request")
+    def test_lock_voice_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None  # Discord returns 204
+        # Deny CONNECT (1<<20 = 1048576) for @everyone (role overwrite)
+        result = json.loads(discord_admin_handler(
+            action="set_channel_permission", channel_id="11",
+            overwrite_id="111", deny="1048576", overwrite_type=0,
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PUT", "/channels/11/permissions/111", "test-token",
+            body={"type": 0, "allow": "0", "deny": "1048576"},
+        )
+
+
+class TestChannelManagementErrorHandling:
+    """Regression: the original crash came from ad-hoc execute_code scripts
+    that did .get("id") on a Discord error body and then crashed. The tool
+    must turn any API error into structured JSON, never a traceback."""
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_api_error_returns_json(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = DiscordAPIError(403, '{"message": "Missing Permissions"}')
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="x",
+        ))
+        assert "error" in result  # no exception, structured error
+        assert "403" in result["error"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_thin_response_no_crash(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {}  # Discord returned an unexpected/thin body
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="x",
+        ))
+        # Must not raise; success with None id rather than KeyError traceback
+        assert result["success"] is True
+        assert result["channel_id"] is None
+
+
+# ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
 
@@ -572,6 +751,21 @@ class TestRegistration:
         """Core + admin actions should cover all known actions."""
         assert set(_CORE_ACTIONS.keys()) | set(_ADMIN_ACTIONS.keys()) == set(_ACTIONS.keys())
         assert set(_CORE_ACTIONS.keys()) & set(_ADMIN_ACTIONS.keys()) == set()
+
+    def test_channel_mgmt_actions_are_admin_only(self):
+        """New channel-management actions live in admin, never in core."""
+        channel_actions = {
+            "create_category", "create_channel", "edit_channel",
+            "move_channel", "delete_channel", "set_channel_permission",
+        }
+        assert channel_actions <= set(_ADMIN_ACTIONS.keys())
+        assert channel_actions.isdisjoint(_CORE_ACTIONS.keys())
+
+    def test_channel_mgmt_actions_in_admin_schema(self):
+        from tools.registry import registry
+        entry = registry._tools["discord_admin"]
+        actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
+        assert {"create_channel", "create_category", "delete_channel"} <= actions
 
     def test_schema_parameter_bounds(self):
         from tools.registry import registry
