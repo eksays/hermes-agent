@@ -29,7 +29,7 @@ SKIP_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".svg",
     ".mp3", ".mp4", ".avi", ".mkv", ".mov",
     ".zip", ".tar", ".gz", ".7z", ".rar",
-    ".pdf", ".docx", ".xlsx", ".pptx",
+    ".xlsx", ".pptx",
     ".pyc", ".pyo",
     ".ttf", ".otf", ".woff", ".woff2",
 }

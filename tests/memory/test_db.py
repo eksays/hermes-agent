@@ -22,18 +22,20 @@ def db_path() -> str:
 
 
 def test_init_creates_tables(db_path):
-    """MemoryDB creates files + files_fts tables and sets user_version = 1."""
+    """MemoryDB creates tables and sets user_version = 3."""
     db = MemoryDB(db_path)
     try:
         tables = db.get_table_names()
         assert "files" in tables
         assert "files_fts" in tables
+        assert "documents" in tables
+        assert "documents_fts" in tables
         # Verify schema version via raw connection
         conn = sqlite3.connect(db_path)
         try:
             cur = conn.execute("PRAGMA user_version")
             version = cur.fetchone()[0]
-            assert version == 2
+            assert version == 3
         finally:
             conn.close()
     finally:
@@ -361,3 +363,102 @@ def test_close_idempotent(db_path):
     db = MemoryDB(db_path)
     db.close()
     db.close()  # second call should not raise
+
+
+# ── Documents ─────────────────────────────────────────────────────────────────
+
+
+def test_upsert_document_new(db_path):
+    """Insert a new document record and retrieve it."""
+    db = MemoryDB(db_path)
+    try:
+        doc_id = db.upsert_document(
+            path="/docs/report.md",
+            content="# Full markdown text content here for testing purposes",
+            content_hash="abc123",
+            word_count=8,
+            summary="Short summary here.",
+        )
+        assert isinstance(doc_id, int) and doc_id > 0
+
+        record = db.get_document_by_path("/docs/report.md")
+        assert record is not None
+        assert record["path"] == "/docs/report.md"
+        assert record["content_hash"] == "abc123"
+        assert record["word_count"] == 8
+        assert "summary" in record
+        assert "indexed_at" in record
+    finally:
+        db.close()
+
+
+def test_upsert_document_updates_content(db_path):
+    """Re-inserting the same path updates content and hash."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_document("/docs/paper.md", "v1 content", "hash1", 2, "")
+        db.upsert_document("/docs/paper.md", "v2 content updated", "hash2", 3, "new summary")
+        record = db.get_document_by_path("/docs/paper.md")
+        assert record is not None
+        assert record["content_hash"] == "hash2"
+        assert record["word_count"] == 3
+    finally:
+        db.close()
+
+
+def test_search_documents_fts(db_path):
+    """FTS5 search returns matching documents by content."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_document("/docs/botany.txt", "Plants use photosynthesis to grow.", "a", 6, "")
+        db.upsert_document("/docs/astronomy.txt", "Stars undergo nuclear fusion.", "b", 4, "")
+
+        results = db.search_documents("photosynthesis", limit=20)
+        assert len(results) >= 1
+        assert any(r["path"] == "/docs/botany.txt" for r in results)
+
+        results = db.search_documents("fusion", limit=20)
+        assert len(results) >= 1
+        assert any(r["path"] == "/docs/astronomy.txt" for r in results)
+
+        results = db.search_documents("zzzznothing", limit=20)
+        assert results == []
+    finally:
+        db.close()
+
+
+def test_remove_document(db_path):
+    """remove_document deletes a document record."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_document("/docs/temp.md", "content", "hash", 1, "")
+        assert db.get_document_by_path("/docs/temp.md") is not None
+        db.remove_document("/docs/temp.md")
+        assert db.get_document_by_path("/docs/temp.md") is None
+    finally:
+        db.close()
+
+
+def test_get_all_document_paths(db_path):
+    """get_all_document_paths returns all indexed document paths."""
+    db = MemoryDB(db_path)
+    try:
+        paths = ["/a.md", "/b.md", "/c.md"]
+        for i, p in enumerate(paths):
+            db.upsert_document(p, f"content {i}", f"h{i}", 2, "")
+        result = db.get_all_document_paths()
+        assert sorted(result) == sorted(paths)
+    finally:
+        db.close()
+
+
+def test_get_stats_includes_documents(db_path):
+    """get_stats returns total_documents count."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_document("/docs/a.md", "aaa", "h1", 1, "")
+        db.upsert_document("/docs/b.md", "bbb", "h2", 1, "")
+        stats = db.get_stats()
+        assert stats["total_documents"] == 2
+    finally:
+        db.close()

@@ -261,3 +261,27 @@ def test_status_tool_schema():
     schema = MemoryManager.status_tool_schema()
     assert schema["type"] == "function"
     assert schema["function"]["name"] == "memory_status"
+
+
+# ── Document search scope ─────────────────────────────────────────────────────
+
+
+def test_memory_search_document_scope():
+    """scope='document' searches document content via FTS5."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        db.upsert_document("/docs/botany.md", "Plants use photosynthesis.", "hash1", 3, "")
+        db.upsert_document("/docs/astro.md", "Stars use nuclear fusion.", "hash2", 4, "")
+
+        results = mgr.search("photosynthesis", scope="document")
+        assert len(results) >= 1
+        assert results[0]["_type"] == "document"
+
+        results = mgr.search("fusion", scope="document")
+        assert len(results) >= 1
+
+        results = mgr.search("photosynthesis")
+        assert len(results) >= 1  # default scope includes documents
+    finally:
+        _cleanup(path, db)

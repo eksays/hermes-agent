@@ -69,7 +69,7 @@ class MemoryManager:
     def initialize(self) -> dict:
         """Run initial crawl + project indexing synchronously."""
         logger.info("[memory] initializing at %s", self.db_path)
-        stats = self.crawler.crawl()
+        stats = self.crawler.crawl(index_documents=True)
         proj_stats = self.crawler.crawl_projects()
         stats.update(proj_stats)
         logger.info("[memory] initial crawl: %s", stats)
@@ -94,7 +94,7 @@ class MemoryManager:
             if self._stop_event.is_set():
                 break
             try:
-                self.crawler.crawl()
+                self.crawler.crawl(index_documents=True)
                 self.crawler.crawl_projects()
             except Exception as exc:
                 logger.warning("[memory] background index error: %s", exc)
@@ -116,8 +116,8 @@ class MemoryManager:
         return self.facade.status()
 
     def force_index(self, force: bool = False) -> dict:
-        """Trigger immediate re-index of files and projects. Returns stats."""
-        stats = self.crawler.crawl()
+        """Trigger immediate re-index of files, documents and projects. Returns stats."""
+        stats = self.crawler.crawl(index_documents=True)
         stats.update(self.crawler.crawl_projects())
         return stats
 

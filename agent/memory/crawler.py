@@ -17,6 +17,8 @@ from agent.memory.safety import is_path_excluded
 from agent.memory.project_parser import (
     detect_project, parse_dependencies, detect_git_info, find_projects,
 )
+from agent.memory.doc_reader import extract_text, SUPPORTED_EXTENSIONS as DOC_EXTENSIONS
+from agent.memory.summarizer import extractive_summarize
 
 logger = logging.getLogger(__name__)
 
@@ -127,10 +129,18 @@ class MemoryCrawler:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    def crawl(self) -> dict:
+    def crawl(self, index_documents: bool = False) -> dict:
         """Walk all root directories and sync the database.
 
-        Returns a dictionary with the following counts:
+        Parameters
+        ----------
+        index_documents : bool
+            When True, also extract and index text content from documents
+            (currently TXT, MD, PDF, DOCX) into the documents table.
+
+        Returns
+        -------
+        dict with the following counts:
 
         * ``files_added`` — files that were newly indexed (or re-indexed
           because their checksum changed).
@@ -138,12 +148,15 @@ class MemoryCrawler:
           excluded path, over-large, or skipped extension).
         * ``files_removed`` — previously-indexed files that no longer exist
           on disk.
+        * ``documents_indexed`` — documents whose text content was extracted
+          and stored (only reported when ``index_documents=True``).
         * ``errors`` — the number of files that raised an exception during
           processing.
         """
         files_added = 0
         files_skipped = 0
         files_removed = 0
+        documents_indexed = 0
         errors = 0
 
         seen_paths: Set[str] = set()
@@ -213,6 +226,29 @@ class MemoryCrawler:
                     checksum=checksum,
                 )
                 files_added += 1
+
+                # ── Document content indexing ───────────────────────────
+                if index_documents and ext in DOC_EXTENSIONS:
+                    try:
+                        doc_result = extract_text(fpath)
+                        if doc_result is not None:
+                            summary = extractive_summarize(
+                                doc_result["text"], max_sentences=3
+                            )
+                            self.db.upsert_document(
+                                path=fpath,
+                                content=doc_result["text"],
+                                content_hash=checksum,
+                                word_count=doc_result["word_count"],
+                                summary=summary,
+                            )
+                            documents_indexed += 1
+                    except Exception:
+                        logger.exception(
+                            "Error indexing document content: %s", fpath
+                        )
+                        errors += 1
+
                 seen_paths.add(fpath)
             except Exception:
                 logger.exception("Error processing file: %s", fpath)
@@ -221,7 +257,17 @@ class MemoryCrawler:
                 if self.on_progress:
                     self.on_progress(idx + 1, total, fpath)
 
-        # ── Stale entry cleanup ──────────────────────────────────────────
+        # ── Stale document cleanup ──────────────────────────────────────
+        if index_documents:
+            for doc_path in self.db.get_all_document_paths():
+                if not os.path.isfile(doc_path):
+                    try:
+                        self.db.remove_document(doc_path)
+                    except Exception:
+                        logger.exception("Error removing stale document: %s", doc_path)
+                        errors += 1
+
+        # ── Stale file cleanup ──────────────────────────────────────────
         root_abses = {os.path.abspath(r) for r in self.roots}
         for db_path in self.db.get_all_file_paths():
             if any(db_path.startswith(root_abs) for root_abs in root_abses):
@@ -239,6 +285,7 @@ class MemoryCrawler:
             "files_added": files_added,
             "files_skipped": files_skipped,
             "files_removed": files_removed,
+            "documents_indexed": documents_indexed,
             "errors": errors,
         }
 

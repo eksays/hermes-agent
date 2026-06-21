@@ -88,7 +88,7 @@ class MemoryManager:
         limit: int = DEFAULT_SEARCH_LIMIT,
         scope: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search indexed files and projects via FTS5 full-text search.
+        """Search indexed files, projects, and document content via FTS5.
 
         The *query* is sanitised before being passed to the database.
 
@@ -103,12 +103,13 @@ class MemoryManager:
         limit : int
             Maximum number of results.
         scope : str or None
-            ``"file"`` for files only, ``"project"`` for projects only, ``None`` for both.
+            ``"file"`` for files only, ``"project"`` for projects only,
+            ``"document"`` for document content only, ``None`` for all.
 
         Returns
         -------
         list[dict]
-            Each dict has a ``_type`` field: ``"file"`` or ``"project"``.
+            Each dict has a ``_type`` field: ``"file"``, ``"project"``, or ``"document"``.
         """
         sanitised = sanitize_query(query)
         if not sanitised:
@@ -138,6 +139,15 @@ class MemoryManager:
             except Exception:
                 pass
 
+        # Search document content
+        if scope in (None, "document"):
+            try:
+                for row in self.db.search_documents(sanitised, limit=limit):
+                    row["_type"] = "document"
+                    results.append(row)
+            except Exception:
+                pass
+
         # Sort by indexed_at desc, limit
         results.sort(key=lambda r: r.get("indexed_at", "") or "", reverse=True)
         return results[:limit]
@@ -159,8 +169,9 @@ class MemoryManager:
             "function": {
                 "name": "memory_search",
                 "description": (
-                    "Search indexed files and projects by name, path, or "
-                    "framework. Use scope='project' to find projects."
+                    "Search indexed files, documents, and projects by name, "
+                    "path, content, or framework. Use scope='document' to "
+                    "search inside document text content."
                 ),
                 "parameters": {
                     "type": "object",
@@ -172,7 +183,8 @@ class MemoryManager:
                         "scope": {
                             "type": "string",
                             "description": (
-                                "Optional scope: 'file', 'project', or leave empty for both."
+                                "Optional scope: 'file', 'project', 'document',"
+                                " or leave empty for all."
                             ),
                         },
                         "type_filter": {

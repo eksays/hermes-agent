@@ -8,7 +8,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _INIT_SQL = """
 PRAGMA journal_mode=WAL;
@@ -109,6 +109,42 @@ CREATE TRIGGER IF NOT EXISTS projects_au AFTER UPDATE ON projects BEGIN
     INSERT INTO projects_fts(rowid, name, root_path, framework)
     VALUES (new.id, new.name, new.root_path, new.framework);
 END;
+
+-- v3: document content index
+
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT UNIQUE NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL,
+    word_count INTEGER DEFAULT 0,
+    summary TEXT DEFAULT '',
+    indexed_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+    content,
+    content='documents',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+    INSERT INTO documents_fts(rowid, content)
+    VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, content)
+    VALUES ('delete', old.id, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, content)
+    VALUES ('delete', old.id, old.content);
+    INSERT INTO documents_fts(rowid, content)
+    VALUES (new.id, new.content);
+END;
 """
 
 
@@ -199,6 +235,35 @@ class MemoryDB:
                             VALUES ('delete', old.id, old.name, old.root_path, old.framework);
                             INSERT INTO projects_fts(rowid, name, root_path, framework)
                             VALUES (new.id, new.name, new.root_path, new.framework); END;
+                    """)
+                # v2→v3: document content index
+                if version < 3:
+                    self._conn.executescript("""
+                        CREATE TABLE IF NOT EXISTS documents (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            path TEXT UNIQUE NOT NULL,
+                            content TEXT NOT NULL DEFAULT '',
+                            content_hash TEXT NOT NULL,
+                            word_count INTEGER DEFAULT 0,
+                            summary TEXT DEFAULT '',
+                            indexed_at TEXT DEFAULT (datetime('now'))
+                        );
+                        CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+                            content,
+                            content='documents', content_rowid='id',
+                            tokenize='porter unicode61'
+                        );
+                        CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+                            INSERT INTO documents_fts(rowid, content)
+                            VALUES (new.id, new.content); END;
+                        CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+                            INSERT INTO documents_fts(documents_fts, rowid, content)
+                            VALUES ('delete', old.id, old.content); END;
+                        CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+                            INSERT INTO documents_fts(documents_fts, rowid, content)
+                            VALUES ('delete', old.id, old.content);
+                            INSERT INTO documents_fts(rowid, content)
+                            VALUES (new.id, new.content); END;
                     """)
                 self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
@@ -414,6 +479,71 @@ class MemoryDB:
             cursor = self._conn.execute("SELECT root_path FROM projects")
             return [row["root_path"] for row in cursor.fetchall()]
 
+    # ── Documents ────────────────────────────────────────────────────────
+
+    def upsert_document(
+        self,
+        path: str,
+        content: str,
+        content_hash: str,
+        word_count: int,
+        summary: str = "",
+    ) -> int:
+        """Insert or update a document record. Returns row id."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO documents (path, content, content_hash, word_count, summary)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    content      = excluded.content,
+                    content_hash = excluded.content_hash,
+                    word_count   = excluded.word_count,
+                    summary      = excluded.summary,
+                    indexed_at   = datetime('now')
+                """,
+                (path, content, content_hash, word_count, summary),
+            )
+            return cursor.lastrowid
+
+    def get_document_by_path(self, path: str) -> Optional[Dict[str, Any]]:
+        """Return the document record for *path*, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM documents WHERE path = ?", (path,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def search_documents(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Full-text search over document content via FTS5."""
+        if not query.strip():
+            return []
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT d.*
+                FROM documents d
+                JOIN documents_fts ON d.id = documents_fts.rowid
+                WHERE documents_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (query, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def remove_document(self, path: str) -> None:
+        """Delete the document at *path*."""
+        with self._lock:
+            self._conn.execute("DELETE FROM documents WHERE path = ?", (path,))
+
+    def get_all_document_paths(self) -> List[str]:
+        """Return all indexed document paths."""
+        with self._lock:
+            cursor = self._conn.execute("SELECT path FROM documents ORDER BY path")
+            return [row["path"] for row in cursor.fetchall()]
+
     # ── Introspection ─────────────────────────────────────────────────────
 
     def get_stats(self) -> Dict[str, Any]:
@@ -434,6 +564,9 @@ class MemoryDB:
             ).fetchone()[0]
             stats["total_git_repos"] = self._conn.execute(
                 "SELECT COUNT(*) FROM git_repos"
+            ).fetchone()[0]
+            stats["total_documents"] = self._conn.execute(
+                "SELECT COUNT(*) FROM documents"
             ).fetchone()[0]
             return stats
 

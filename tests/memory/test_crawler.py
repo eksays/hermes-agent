@@ -261,3 +261,88 @@ def _create_file(root: str, rel_path: str, content: bytes) -> str:
     with open(abspath, "wb") as f:
         f.write(content)
     return abspath
+
+
+# ── Document indexing ────────────────────────────────────────────────────────
+
+
+def test_crawl_indexes_documents(db_path):
+    """Crawl with index_documents=True indexes .txt and .md content."""
+    db = MemoryDB(db_path)
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes_doc_") as root:
+            _create_file(root, "readme.md", b"# Project Title\n\nDescription here.")
+            _create_file(root, "notes.txt", b"Some plain text notes.")
+            _create_file(root, "script.py", b"print('not a document')")
+
+            crawler = MemoryCrawler(db, roots=[root])
+            result = crawler.crawl(index_documents=True)
+
+            assert result["files_added"] == 3
+            assert result["documents_indexed"] >= 2  # .md + .txt
+
+            stats = db.get_stats()
+            assert stats["total_documents"] >= 2
+    finally:
+        db.close()
+
+
+def test_crawl_documents_skips_binary_extensions(db_path):
+    """Crawl does not index documents with SKIP_EXTENSIONS (e.g. .pdf, .docx)."""
+    db = MemoryDB(db_path)
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes_doc_") as root:
+            _create_file(root, "real.txt", b"Indexable text content here.")
+            # These have binary extensions in SKIP_EXTENSIONS — skip
+            _create_file(root, "image.png", b"fake png")
+            _create_file(root, "archive.zip", b"fake zip")
+
+            crawler = MemoryCrawler(db, roots=[root])
+            result = crawler.crawl(index_documents=True)
+
+            assert result["documents_indexed"] == 1  # only real.txt
+    finally:
+        db.close()
+
+
+def test_crawl_documents_maintains_word_count(db_path):
+    """Document index includes word_count."""
+    db = MemoryDB(db_path)
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes_doc_") as root:
+            content = b"one two three four five six seven eight"
+            _create_file(root, "words.txt", content)
+
+            crawler = MemoryCrawler(db, roots=[root])
+            result = crawler.crawl(index_documents=True)
+            assert result["documents_indexed"] >= 1
+
+            # Retrieve the document record
+            doc_path = os.path.join(root, "words.txt")
+            doc = db.get_document_by_path(doc_path)
+            assert doc is not None
+            assert doc["word_count"] == 8
+    finally:
+        db.close()
+
+
+def test_crawl_documents_stale_cleanup(db_path):
+    """Removing a file on disk also removes its document index entry."""
+    db = MemoryDB(db_path)
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes_doc_") as root:
+            doc_path = _create_file(root, "report.md", b"# Report\n\nContent here.")
+            _create_file(root, "keep.txt", b"Keep this.")
+
+            crawler = MemoryCrawler(db, roots=[root])
+            result = crawler.crawl(index_documents=True)
+            assert result["documents_indexed"] >= 2
+
+            os.remove(doc_path)
+
+            result2 = crawler.crawl(index_documents=True)
+            stats = db.get_stats()
+            assert stats["total_documents"] >= 1  # keep.txt remains
+    finally:
+        db.close()
+
