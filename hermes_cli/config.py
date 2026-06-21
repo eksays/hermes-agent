@@ -1764,7 +1764,7 @@ DEFAULT_CONFIG = {
     # and exposes search/status tools to the agent. All offline, zero API calls.
     "memory_index": {
         "enabled": True,
-        "roots": [],
+        "roots": ["C:\\", "D:\\", "E:\\"],
         "exclude": [
             "node_modules", ".git", ".venv", "__pycache__",
             "dist", "build", ".next", ".cache", ".hermes",
@@ -1774,6 +1774,19 @@ DEFAULT_CONFIG = {
         "doc_content_extract": True,     # extract & index document text content (PDF/DOCX/TXT/MD)
         "doc_max_kb": 500,               # max content per document in KB
         "auto_remember": True,           # automatically save facts from conversation
+        "scoring": {
+            "enabled": True,
+            "interval_minutes": 60,
+            "weights": {
+                "recency": 0.25,
+                "frequency": 0.20,
+                "user_boost": 0.20,
+                "git_activity": 0.15,
+                "project_relevance": 0.10,
+                "similarity": 0.10,
+            },
+            "stale_default_days": 14,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
