@@ -8,7 +8,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 _INIT_SQL = """
 PRAGMA journal_mode=WAL;
@@ -145,6 +145,52 @@ CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
     INSERT INTO documents_fts(rowid, content)
     VALUES (new.id, new.content);
 END;
+
+-- v4: memory facts and user preferences
+
+CREATE TABLE IF NOT EXISTS memory_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    content TEXT NOT NULL,
+    category TEXT DEFAULT 'core',
+    source TEXT DEFAULT 'manual',
+    ttl_seconds INTEGER DEFAULT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL,
+    category TEXT DEFAULT 'behavior',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(
+    key, content,
+    content='memory_facts',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS memory_facts_ai AFTER INSERT ON memory_facts BEGIN
+    INSERT INTO memory_facts_fts(rowid, key, content)
+    VALUES (new.id, new.key, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_facts_ad AFTER DELETE ON memory_facts BEGIN
+    INSERT INTO memory_facts_fts(memory_facts_fts, rowid, key, content)
+    VALUES ('delete', old.id, old.key, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_facts_au AFTER UPDATE ON memory_facts BEGIN
+    INSERT INTO memory_facts_fts(memory_facts_fts, rowid, key, content)
+    VALUES ('delete', old.id, old.key, old.content);
+    INSERT INTO memory_facts_fts(rowid, key, content)
+    VALUES (new.id, new.key, new.content);
+END;
 """
 
 
@@ -264,6 +310,44 @@ class MemoryDB:
                             VALUES ('delete', old.id, old.content);
                             INSERT INTO documents_fts(rowid, content)
                             VALUES (new.id, new.content); END;
+                    """)
+                # v3→v4: memory facts and user preferences
+                if version < 4:
+                    self._conn.executescript("""
+                        CREATE TABLE IF NOT EXISTS memory_facts (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            key TEXT UNIQUE NOT NULL,
+                            content TEXT NOT NULL,
+                            category TEXT DEFAULT 'core',
+                            source TEXT DEFAULT 'manual',
+                            ttl_seconds INTEGER DEFAULT NULL,
+                            created_at TEXT DEFAULT (datetime('now')),
+                            updated_at TEXT DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS user_preferences (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            key TEXT UNIQUE NOT NULL,
+                            value TEXT NOT NULL,
+                            category TEXT DEFAULT 'behavior',
+                            created_at TEXT DEFAULT (datetime('now')),
+                            updated_at TEXT DEFAULT (datetime('now'))
+                        );
+                        CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(
+                            key, content,
+                            content='memory_facts', content_rowid='id',
+                            tokenize='porter unicode61'
+                        );
+                        CREATE TRIGGER IF NOT EXISTS memory_facts_ai AFTER INSERT ON memory_facts BEGIN
+                            INSERT INTO memory_facts_fts(rowid, key, content)
+                            VALUES (new.id, new.key, new.content); END;
+                        CREATE TRIGGER IF NOT EXISTS memory_facts_ad AFTER DELETE ON memory_facts BEGIN
+                            INSERT INTO memory_facts_fts(memory_facts_fts, rowid, key, content)
+                            VALUES ('delete', old.id, old.key, old.content); END;
+                        CREATE TRIGGER IF NOT EXISTS memory_facts_au AFTER UPDATE ON memory_facts BEGIN
+                            INSERT INTO memory_facts_fts(memory_facts_fts, rowid, key, content)
+                            VALUES ('delete', old.id, old.key, old.content);
+                            INSERT INTO memory_facts_fts(rowid, key, content)
+                            VALUES (new.id, new.key, new.content); END;
                     """)
                 self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
@@ -479,6 +563,126 @@ class MemoryDB:
             cursor = self._conn.execute("SELECT root_path FROM projects")
             return [row["root_path"] for row in cursor.fetchall()]
 
+    # ── Memory Facts ─────────────────────────────────────────────────────
+
+    def upsert_memory_fact(
+        self,
+        key: str,
+        content: str,
+        category: str = "core",
+        source: str = "manual",
+        ttl_seconds: Optional[int] = None,
+    ) -> int:
+        """Insert or update a memory fact. Returns row id."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO memory_facts (key, content, category, source, ttl_seconds)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    content     = excluded.content,
+                    category    = excluded.category,
+                    source      = excluded.source,
+                    ttl_seconds = excluded.ttl_seconds,
+                    updated_at  = datetime('now')
+                """,
+                (key, content, category, source, ttl_seconds),
+            )
+            return cursor.lastrowid
+
+    def get_memory_fact(self, key: str) -> Optional[Dict[str, Any]]:
+        """Return a memory fact by key, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM memory_facts WHERE key = ?", (key,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def search_memory_facts(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Full-text search over memory facts."""
+        if not query.strip():
+            return []
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT mf.*
+                FROM memory_facts mf
+                JOIN memory_facts_fts ON mf.id = memory_facts_fts.rowid
+                WHERE memory_facts_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (query, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def delete_memory_fact(self, key: str) -> None:
+        """Delete a memory fact by key."""
+        with self._lock:
+            self._conn.execute("DELETE FROM memory_facts WHERE key = ?", (key,))
+
+    def get_all_memory_fact_keys(self) -> List[str]:
+        """Return all stored memory fact keys."""
+        with self._lock:
+            cursor = self._conn.execute("SELECT key FROM memory_facts ORDER BY key")
+            return [row["key"] for row in cursor.fetchall()]
+
+    # ── User Preferences ─────────────────────────────────────────────────
+
+    def upsert_preference(
+        self,
+        key: str,
+        value: str,
+        category: str = "behavior",
+    ) -> int:
+        """Insert or update a user preference. Returns row id."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO user_preferences (key, value, category)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value      = excluded.value,
+                    category   = excluded.category,
+                    updated_at = datetime('now')
+                """,
+                (key, value, category),
+            )
+            return cursor.lastrowid
+
+    def get_preference(self, key: str) -> Optional[Dict[str, Any]]:
+        """Return a preference by key, or ``None``."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM user_preferences WHERE key = ?", (key,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_all_preference_keys(self) -> List[str]:
+        """Return all stored preference keys."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT key FROM user_preferences ORDER BY key"
+            )
+            return [row["key"] for row in cursor.fetchall()]
+
+    def delete_preference(self, key: str) -> None:
+        """Delete a preference by key."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM user_preferences WHERE key = ?", (key,)
+            )
+
+    def get_all_preferences(self) -> List[Dict[str, Any]]:
+        """Return all preferences as dicts."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM user_preferences ORDER BY key"
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
     # ── Documents ────────────────────────────────────────────────────────
 
     def upsert_document(
@@ -567,6 +771,12 @@ class MemoryDB:
             ).fetchone()[0]
             stats["total_documents"] = self._conn.execute(
                 "SELECT COUNT(*) FROM documents"
+            ).fetchone()[0]
+            stats["total_memory_facts"] = self._conn.execute(
+                "SELECT COUNT(*) FROM memory_facts"
+            ).fetchone()[0]
+            stats["total_preferences"] = self._conn.execute(
+                "SELECT COUNT(*) FROM user_preferences"
             ).fetchone()[0]
             return stats
 

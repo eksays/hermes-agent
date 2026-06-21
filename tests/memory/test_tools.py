@@ -285,3 +285,147 @@ def test_memory_search_document_scope():
         assert len(results) >= 1  # default scope includes documents
     finally:
         _cleanup(path, db)
+
+
+# ── Memory fact tools (remember/recall/forget) ────────────────────────────────
+
+
+def test_remember_stores_fact():
+    """remember() stores a memory fact and returns it on recall()."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        result = mgr.remember(
+            key="user_preferred_editor",
+            content="User prefers VS Code",
+            category="core",
+            source="user",
+        )
+        assert result["success"] is True
+        assert result["key"] == "user_preferred_editor"
+
+        recalled = mgr.recall("VS Code")
+        assert len(recalled) >= 1
+        assert any(r["key"] == "user_preferred_editor" for r in recalled)
+    finally:
+        _cleanup(path, db)
+
+
+def test_remember_updates_existing():
+    """remember() with same key updates the fact."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        mgr.remember("key1", "v1", "core", "user")
+        mgr.remember("key1", "v2", "daily", "system")
+
+        recalled = mgr.recall("v2")
+        assert len(recalled) >= 1
+    finally:
+        _cleanup(path, db)
+
+
+def test_recall_empty_query():
+    """recall() with empty query returns []."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        assert mgr.recall("") == []
+        assert mgr.recall("   ") == []
+    finally:
+        _cleanup(path, db)
+
+
+def test_recall_no_match():
+    """recall() with non-matching query returns []."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        mgr.remember("k", "content", "core", "user")
+        assert mgr.recall("zzzznothing") == []
+    finally:
+        _cleanup(path, db)
+
+
+def test_forget_removes_fact():
+    """forget() removes a stored fact."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        mgr.remember("del_key", "to delete", "core", "user")
+        assert len(mgr.recall("delete")) >= 1
+
+        result = mgr.forget("del_key")
+        assert result["success"] is True
+        assert mgr.recall("delete") == []
+    finally:
+        _cleanup(path, db)
+
+
+# ── Preference tools (save_preference) ────────────────────────────────────────
+
+
+def test_save_preference_stores():
+    """save_preference() stores a user preference."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        result = mgr.save_preference(
+            key="communication_style",
+            value="concise and direct",
+            category="behavior",
+        )
+        assert result["success"] is True
+        assert result["key"] == "communication_style"
+
+        # Retrieve via recall
+        recalled = mgr.recall("communication")
+        assert len(recalled) >= 1
+    finally:
+        _cleanup(path, db)
+
+
+def test_save_preference_updates():
+    """save_preference() with same key updates the value."""
+    path, db = _make_db()
+    try:
+        mgr = MemoryManager(db)
+        mgr.save_preference("style", "verbose", "behavior")
+        mgr.save_preference("style", "concise", "behavior")
+
+        # Should find the updated value
+        recalled = mgr.recall("concise")
+        assert len(recalled) >= 1
+    finally:
+        _cleanup(path, db)
+
+
+# ── Schema tool schemas ───────────────────────────────────────────────────────
+
+
+def test_remember_tool_schema():
+    """remember_tool_schema returns OpenAI format."""
+    schema = MemoryManager.remember_tool_schema()
+    assert schema["function"]["name"] == "memory_remember"
+    assert "key" in schema["function"]["parameters"]["required"]
+
+
+def test_recall_tool_schema():
+    """recall_tool_schema returns OpenAI format."""
+    schema = MemoryManager.recall_tool_schema()
+    assert schema["function"]["name"] == "memory_recall"
+    assert "query" in schema["function"]["parameters"]["required"]
+
+
+def test_save_preference_tool_schema():
+    """save_preference_tool_schema returns OpenAI format."""
+    schema = MemoryManager.save_preference_tool_schema()
+    assert schema["function"]["name"] == "memory_save_preference"
+    assert "key" in schema["function"]["parameters"]["required"]
+
+
+def test_forget_tool_schema():
+    """forget_tool_schema returns OpenAI format."""
+    schema = MemoryManager.forget_tool_schema()
+    assert schema["function"]["name"] == "memory_forget"
+    assert "key" in schema["function"]["parameters"]["required"]

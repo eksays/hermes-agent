@@ -14,6 +14,9 @@ from agent.memory.config import DEFAULT_SEARCH_LIMIT
 from agent.memory.db import MemoryDB
 from agent.memory.safety import sanitize_query
 
+_MAX_FACT_CONTENT_LEN = 5000
+_MAX_PREF_VALUE_LEN = 2000
+
 
 class SearchResult:
     """Lightweight wrapper around a search result row.
@@ -148,9 +151,119 @@ class MemoryManager:
             except Exception:
                 pass
 
+        # Search memory facts
+        if scope in (None, "fact"):
+            try:
+                for row in self.db.search_memory_facts(sanitised, limit=limit):
+                    row["_type"] = "fact"
+                    results.append(row)
+            except Exception:
+                pass
+
         # Sort by indexed_at desc, limit
         results.sort(key=lambda r: r.get("indexed_at", "") or "", reverse=True)
         return results[:limit]
+
+    def remember(
+        self,
+        key: str,
+        content: str,
+        category: str = "core",
+        source: str = "agent_write",
+    ) -> Dict[str, Any]:
+        """Store a memory fact.
+
+        Parameters
+        ----------
+        key : str
+            Unique identifier for the fact (e.g. ``"user_preferred_stack"``).
+        content : str
+            The fact content.
+        category : str
+            ``"core"``, ``"daily"``, or ``"conversation"``.
+        source : str
+            ``"agent_write"``, ``"user"``, or ``"system"``.
+
+        Returns
+        -------
+        dict with ``success`` and ``key``.
+        """
+        truncated = content[:_MAX_FACT_CONTENT_LEN]
+        try:
+            self.db.upsert_memory_fact(key, truncated, category, source)
+            return {"success": True, "key": key}
+        except Exception as exc:
+            return {"success": False, "key": key, "error": str(exc)}
+
+    def recall(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Recall memory facts matching *query*.
+
+        Also searches user_preferences keys+values.
+
+        Returns
+        -------
+        list of dicts with ``_type``: ``"fact"`` or ``"preference"``.
+        """
+        sanitised = sanitize_query(query)
+        if not sanitised:
+            return []
+
+        results: List[Dict[str, Any]] = []
+
+        # Search memory facts
+        try:
+            for row in self.db.search_memory_facts(sanitised, limit=limit):
+                row["_type"] = "fact"
+                results.append(row)
+        except Exception:
+            pass
+
+        # Search preferences (by key/value)
+        try:
+            for row in self.db.get_all_preferences():
+                if sanitised in row.get("key", "").lower() or sanitised in row.get("value", "").lower():
+                    row["_type"] = "preference"
+                    results.append(row)
+        except Exception:
+            pass
+
+        results.sort(key=lambda r: r.get("updated_at", "") or "", reverse=True)
+        return results[:limit]
+
+    def forget(self, key: str) -> Dict[str, Any]:
+        """Delete a memory fact or preference by key.
+
+        Tries memory_facts first, then user_preferences.
+        """
+        try:
+            fact = self.db.get_memory_fact(key)
+            if fact is not None:
+                self.db.delete_memory_fact(key)
+                return {"success": True, "key": key}
+            pref = self.db.get_preference(key)
+            if pref is not None:
+                self.db.delete_preference(key)
+                return {"success": True, "key": key}
+            return {"success": False, "key": key, "error": "not found"}
+        except Exception as exc:
+            return {"success": False, "key": key, "error": str(exc)}
+
+    def save_preference(
+        self,
+        key: str,
+        value: str,
+        category: str = "behavior",
+    ) -> Dict[str, Any]:
+        """Store a user preference.
+
+        Preferences are read at session start to tailor agent behavior.
+        """
+        truncated = value[:_MAX_PREF_VALUE_LEN]
+        try:
+            self.db.upsert_preference(key, truncated, category)
+            return {"success": True, "key": key}
+        except Exception as exc:
+            return {"success": False, "key": key, "error": str(exc)}
 
     def status(self) -> Dict[str, Any]:
         """Return database statistics.
@@ -169,9 +282,10 @@ class MemoryManager:
             "function": {
                 "name": "memory_search",
                 "description": (
-                    "Search indexed files, documents, and projects by name, "
-                    "path, content, or framework. Use scope='document' to "
-                    "search inside document text content."
+                    "Search indexed files, documents, projects, and memory "
+                    "facts by name, path, content, or framework. Use "
+                    "scope='document' to search inside document text content "
+                    "or scope='fact' for memory facts."
                 ),
                 "parameters": {
                     "type": "object",
@@ -225,6 +339,134 @@ class MemoryManager:
                 "parameters": {
                     "type": "object",
                     "properties": {},
+                },
+            },
+        }
+
+    @staticmethod
+    def remember_tool_schema() -> dict:
+        """OpenAI function-calling schema for ``memory_remember``."""
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_remember",
+                "description": (
+                    "Store a fact, preference, or observation in long-term memory. "
+                    "Use this to remember user preferences, project context, or "
+                    "important information across sessions."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": (
+                                "Unique identifier for this memory "
+                                "(e.g. 'user_preferred_stack', 'project_x_goal')."
+                            ),
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The fact or observation to store.",
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": ["core", "daily", "conversation"],
+                            "description": (
+                                "Category: 'core' (permanent), 'daily' (session-scoped), "
+                                "'conversation' (single-turn)."
+                            ),
+                        },
+                    },
+                    "required": ["key", "content"],
+                },
+            },
+        }
+
+    @staticmethod
+    def recall_tool_schema() -> dict:
+        """OpenAI function-calling schema for ``memory_recall``."""
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_recall",
+                "description": (
+                    "Recall stored memories and preferences by query. "
+                    "Returns matching facts, observations, and preferences."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query to find relevant memories.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results.",
+                            "default": 10,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+
+    @staticmethod
+    def save_preference_tool_schema() -> dict:
+        """OpenAI function-calling schema for ``memory_save_preference``."""
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_save_preference",
+                "description": (
+                    "Save a user preference about how they want to be helped, "
+                    "communication style, or working patterns."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": (
+                                "Preference key (e.g. 'communication_style', "
+                                "'coding_preferences', 'working_hours')."
+                            ),
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "The preference value.",
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": ["behavior", "style", "schedule", "stack"],
+                            "description": "Category of preference.",
+                        },
+                    },
+                    "required": ["key", "value"],
+                },
+            },
+        }
+
+    @staticmethod
+    def forget_tool_schema() -> dict:
+        """OpenAI function-calling schema for ``memory_forget``."""
+        return {
+            "type": "function",
+            "function": {
+                "name": "memory_forget",
+                "description": (
+                    "Delete a stored memory fact or preference by its key."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "The key of the memory or preference to delete.",
+                        },
+                    },
+                    "required": ["key"],
                 },
             },
         }

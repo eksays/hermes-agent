@@ -125,6 +125,10 @@ class MemoryManager:
         """Return all tool schemas for the agent registry."""
         return [
             MemoryToolsFacade.search_tool_schema(),
+            MemoryToolsFacade.remember_tool_schema(),
+            MemoryToolsFacade.recall_tool_schema(),
+            MemoryToolsFacade.save_preference_tool_schema(),
+            MemoryToolsFacade.forget_tool_schema(),
             MemoryToolsFacade.index_tool_schema(),
             MemoryToolsFacade.status_tool_schema(),
         ]

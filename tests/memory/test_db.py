@@ -22,7 +22,7 @@ def db_path() -> str:
 
 
 def test_init_creates_tables(db_path):
-    """MemoryDB creates tables and sets user_version = 3."""
+    """MemoryDB creates tables and sets user_version = 4."""
     db = MemoryDB(db_path)
     try:
         tables = db.get_table_names()
@@ -30,12 +30,15 @@ def test_init_creates_tables(db_path):
         assert "files_fts" in tables
         assert "documents" in tables
         assert "documents_fts" in tables
+        assert "memory_facts" in tables
+        assert "memory_facts_fts" in tables
+        assert "user_preferences" in tables
         # Verify schema version via raw connection
         conn = sqlite3.connect(db_path)
         try:
             cur = conn.execute("PRAGMA user_version")
             version = cur.fetchone()[0]
-            assert version == 3
+            assert version == 4
         finally:
             conn.close()
     finally:
@@ -460,5 +463,170 @@ def test_get_stats_includes_documents(db_path):
         db.upsert_document("/docs/b.md", "bbb", "h2", 1, "")
         stats = db.get_stats()
         assert stats["total_documents"] == 2
+    finally:
+        db.close()
+
+
+# ── Memory Facts ──────────────────────────────────────────────────────────────
+
+
+def test_upsert_memory_fact_new(db_path):
+    """Insert a new memory fact and retrieve it by key."""
+    db = MemoryDB(db_path)
+    try:
+        fact_id = db.upsert_memory_fact(
+            key="user_preferred_editor",
+            content="User likes VS Code with Python extension",
+            category="core",
+            source="user",
+        )
+        assert isinstance(fact_id, int) and fact_id > 0
+
+        record = db.get_memory_fact("user_preferred_editor")
+        assert record is not None
+        assert record["content"] == "User likes VS Code with Python extension"
+        assert record["category"] == "core"
+        assert record["source"] == "user"
+    finally:
+        db.close()
+
+
+def test_upsert_memory_fact_updates(db_path):
+    """Re-inserting same key updates content and metadata."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_memory_fact("key1", "v1", "core", "user")
+        db.upsert_memory_fact("key1", "v2", "daily", "system")
+        record = db.get_memory_fact("key1")
+        assert record is not None
+        assert record["content"] == "v2"
+        assert record["category"] == "daily"
+    finally:
+        db.close()
+
+
+def test_memory_fact_not_found(db_path):
+    """get_memory_fact returns None for missing key."""
+    db = MemoryDB(db_path)
+    try:
+        assert db.get_memory_fact("nonexistent") is None
+    finally:
+        db.close()
+
+
+def test_search_memory_facts_fts(db_path):
+    """FTS5 search returns matching memory facts."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_memory_fact("pref_stack", "User prefers Python stack", "core", "user")
+        db.upsert_memory_fact("pref_editor", "User prefers VS Code", "core", "user")
+
+        results = db.search_memory_facts("Python")
+        assert len(results) >= 1
+        assert any(r["key"] == "pref_stack" for r in results)
+
+        results = db.search_memory_facts("VS Code")
+        assert len(results) >= 1
+
+        results = db.search_memory_facts("zzzznothing")
+        assert results == []
+    finally:
+        db.close()
+
+
+def test_delete_memory_fact(db_path):
+    """delete_memory_fact removes a fact by key."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_memory_fact("key_del", "to delete", "core", "user")
+        assert db.get_memory_fact("key_del") is not None
+        db.delete_memory_fact("key_del")
+        assert db.get_memory_fact("key_del") is None
+    finally:
+        db.close()
+
+
+def test_get_all_memory_fact_keys(db_path):
+    """get_all_memory_fact_keys returns all stored keys."""
+    db = MemoryDB(db_path)
+    try:
+        keys = ["k1", "k2", "k3"]
+        for k in keys:
+            db.upsert_memory_fact(k, f"content of {k}", "core", "user")
+        result = db.get_all_memory_fact_keys()
+        assert sorted(result) == sorted(keys)
+    finally:
+        db.close()
+
+
+# ── User Preferences ──────────────────────────────────────────────────────────
+
+
+def test_upsert_preference_new(db_path):
+    """Insert a new user preference and retrieve it."""
+    db = MemoryDB(db_path)
+    try:
+        pref_id = db.upsert_preference(
+            key="communication_style",
+            value="concise and direct",
+            category="behavior",
+        )
+        assert isinstance(pref_id, int) and pref_id > 0
+
+        record = db.get_preference("communication_style")
+        assert record is not None
+        assert record["value"] == "concise and direct"
+        assert record["category"] == "behavior"
+    finally:
+        db.close()
+
+
+def test_upsert_preference_updates(db_path):
+    """Re-inserting same preference key updates value."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_preference("style", "verbose", "behavior")
+        db.upsert_preference("style", "concise", "behavior")
+        record = db.get_preference("style")
+        assert record["value"] == "concise"
+    finally:
+        db.close()
+
+
+def test_get_all_preference_keys(db_path):
+    """get_all_preference_keys returns all stored preference keys."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_preference("p1", "v1", "behavior")
+        db.upsert_preference("p2", "v2", "schedule")
+        keys = db.get_all_preference_keys()
+        assert "p1" in keys
+        assert "p2" in keys
+    finally:
+        db.close()
+
+
+def test_delete_preference(db_path):
+    """delete_preference removes a preference by key."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_preference("del_me", "value", "behavior")
+        assert db.get_preference("del_me") is not None
+        db.delete_preference("del_me")
+        assert db.get_preference("del_me") is None
+    finally:
+        db.close()
+
+
+def test_get_stats_includes_memory(db_path):
+    """get_stats returns memory_facts and preferences counts."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_memory_fact("f1", "fact 1", "core", "user")
+        db.upsert_preference("p1", "pref 1", "behavior")
+
+        stats = db.get_stats()
+        assert stats["total_memory_facts"] >= 1
+        assert stats["total_preferences"] >= 1
     finally:
         db.close()
