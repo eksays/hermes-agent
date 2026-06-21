@@ -166,6 +166,33 @@ model:
 # worktree: false   # Default — only create when -w flag is passed
 
 # =============================================================================
+# Coding Super-Ability — Built-in Coding Upgrade (Pilar A + Pilar B)
+# =============================================================================
+# Two-pillar upgrade that elevates Hermes's coding ability regardless of
+# which model you use:
+#
+#   A) Scaffolding (always active when coding posture activates):
+#      Upgraded system-prompt brief with planning discipline, root-cause
+#      verification, and a tight edit-verify loop — model-agnostic.
+#
+#   B) Smart routing (opt-in, disabled by default):
+#      Hermes detects which coding model is strongest from your available
+#      credentials and automatically routes complex implementation subtasks
+#      to it via ``delegate_task``. Your chat session model stays unchanged.
+#
+#      When routing is enabled and delegation.model is not set, the
+#      recommended coding model becomes the default subagent model.
+#
+# coding:
+#   routing:
+#     enabled: false                # Opt in to smart model routing
+#     mode: "balanced"              # economy | balanced | max
+#     # force: "anthropic:claude-opus-4.8"   # Pin a specific model (skips ranking)
+#     # only: ["anthropic", "openrouter"]    # Only consider these providers
+#     # ignore: ["deepseek"]                 # Skip these providers
+#     # min_context: 100000                  # Minimum context window (tokens)
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.
