@@ -429,3 +429,61 @@ def test_forget_tool_schema():
     schema = MemoryManager.forget_tool_schema()
     assert schema["function"]["name"] == "memory_forget"
     assert "key" in schema["function"]["parameters"]["required"]
+
+
+# ── Auto-remember ──────────────────────────────────────────────────────────────
+
+
+def test_remember_from_message_detects_preference():
+    """auto_remember_from_message saves facts from preference patterns."""
+    path, db = _make_db()
+    try:
+        from agent.memory import MemoryManager as HermesMemory
+        mm = HermesMemory(db_path=path)
+        saved = mm.auto_remember_from_message("I prefer concise answers with bullet points")
+        assert saved >= 1
+        recalled = mm.search("concise answers")
+        assert len(recalled) >= 1
+        mm.shutdown()
+    finally:
+        _cleanup(path, db)
+
+
+def test_remember_from_message_my_pattern():
+    """auto_remember_from_message saves 'my X is Y' patterns."""
+    path, db = _make_db()
+    try:
+        from agent.memory import MemoryManager as HermesMemory
+        mm = HermesMemory(db_path=path)
+        saved = mm.auto_remember_from_message("My favorite editor is VS Code with Python")
+        assert saved >= 1
+        recalled = mm.search("favorite editor")
+        assert len(recalled) >= 1
+        mm.shutdown()
+    finally:
+        _cleanup(path, db)
+
+
+def test_remember_from_message_empty():
+    """auto_remember_from_message with empty input returns 0."""
+    path, db = _make_db()
+    try:
+        from agent.memory import MemoryManager as HermesMemory
+        mm = HermesMemory(db_path=path)
+        assert mm.auto_remember_from_message("") == 0
+        assert mm.auto_remember_from_message("   ") == 0
+        mm.shutdown()
+    finally:
+        _cleanup(path, db)
+
+
+def test_remember_from_message_no_pattern():
+    """auto_remember_from_message with unrelated text returns 0."""
+    path, db = _make_db()
+    try:
+        from agent.memory import MemoryManager as HermesMemory
+        mm = HermesMemory(db_path=path)
+        assert mm.auto_remember_from_message("The weather is nice today.") == 0
+        mm.shutdown()
+    finally:
+        _cleanup(path, db)

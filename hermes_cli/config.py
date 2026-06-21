@@ -1771,6 +1771,9 @@ DEFAULT_CONFIG = {
         ],
         "scan_interval_minutes": 30,
         "max_file_size_mb": 50,
+        "doc_content_extract": True,     # extract & index document text content (PDF/DOCX/TXT/MD)
+        "doc_max_kb": 500,               # max content per document in KB
+        "auto_remember": True,           # automatically save facts from conversation
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

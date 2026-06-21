@@ -628,6 +628,26 @@ class MemoryDB:
             cursor = self._conn.execute("SELECT key FROM memory_facts ORDER BY key")
             return [row["key"] for row in cursor.fetchall()]
 
+    def cleanup_expired_facts(self) -> int:
+        """Delete memory facts whose TTL has elapsed.
+
+        A fact expires when ``(julianday('now') - julianday(created_at)) * 86400
+        >= ttl_seconds``. Facts with ``ttl_seconds IS NULL`` are never removed.
+
+        Returns the number of deleted rows.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM memory_facts
+                WHERE ttl_seconds IS NOT NULL
+                  AND (julianday('now') - julianday(created_at)) * 86400 >= ttl_seconds
+                """
+            )
+            deleted = cursor.rowcount
+            self._conn.commit()
+            return deleted if deleted > 0 else 0
+
     # ── User Preferences ─────────────────────────────────────────────────
 
     def upsert_preference(

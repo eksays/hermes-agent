@@ -630,3 +630,63 @@ def test_get_stats_includes_memory(db_path):
         assert stats["total_preferences"] >= 1
     finally:
         db.close()
+
+
+# ── TTL expiry ────────────────────────────────────────────────────────────────
+
+
+def test_cleanup_expired_facts_removes_expired(db_path):
+    """cleanup_expired_facts removes facts past their TTL."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_memory_fact("keep_me", "permanent", "core", "user")
+        db.upsert_memory_fact("expired", "old data", "daily", "system", ttl_seconds=1)
+        import time
+        time.sleep(1.1)
+        removed = db.cleanup_expired_facts()
+        assert removed >= 1
+        assert db.get_memory_fact("keep_me") is not None
+        assert db.get_memory_fact("expired") is None
+    finally:
+        db.close()
+
+
+def test_cleanup_expired_facts_no_expiry(db_path):
+    """Facts with ttl_seconds=None are never removed."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_memory_fact("core1", "data1", "core", "user")
+        db.upsert_memory_fact("core2", "data2", "core", "user")
+        removed = db.cleanup_expired_facts()
+        assert removed == 0
+        assert db.get_memory_fact("core1") is not None
+    finally:
+        db.close()
+
+
+def test_cleanup_expired_facts_empty(db_path):
+    """cleanup_expired_facts on empty DB returns 0."""
+    db = MemoryDB(db_path)
+    try:
+        assert db.cleanup_expired_facts() == 0
+    finally:
+        db.close()
+
+
+
+# ── Preferences standalone ─────────────────────────────────────────────────────
+
+
+def test_get_all_preferences_returns_list(db_path):
+    """get_all_preferences returns all preference records."""
+    db = MemoryDB(db_path)
+    try:
+        db.upsert_preference("p1", "v1", "behavior")
+        db.upsert_preference("p2", "v2", "schedule")
+        all_prefs = db.get_all_preferences()
+        assert len(all_prefs) >= 2
+        keys = [p["key"] for p in all_prefs]
+        assert "p1" in keys
+        assert "p2" in keys
+    finally:
+        db.close()

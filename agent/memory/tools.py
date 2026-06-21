@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory.config import DEFAULT_SEARCH_LIMIT
 from agent.memory.db import MemoryDB
-from agent.memory.safety import sanitize_query
+from agent.memory.safety import sanitize_query, strip_pii
 
 _MAX_FACT_CONTENT_LEN = 5000
 _MAX_PREF_VALUE_LEN = 2000
@@ -188,9 +188,9 @@ class MemoryManager:
         -------
         dict with ``success`` and ``key``.
         """
-        truncated = content[:_MAX_FACT_CONTENT_LEN]
+        safe = strip_pii(content[:_MAX_FACT_CONTENT_LEN])
         try:
-            self.db.upsert_memory_fact(key, truncated, category, source)
+            self.db.upsert_memory_fact(key, safe, category, source)
             return {"success": True, "key": key}
         except Exception as exc:
             return {"success": False, "key": key, "error": str(exc)}
@@ -258,9 +258,9 @@ class MemoryManager:
 
         Preferences are read at session start to tailor agent behavior.
         """
-        truncated = value[:_MAX_PREF_VALUE_LEN]
+        safe = strip_pii(value[:_MAX_PREF_VALUE_LEN])
         try:
-            self.db.upsert_preference(key, truncated, category)
+            self.db.upsert_preference(key, safe, category)
             return {"success": True, "key": key}
         except Exception as exc:
             return {"success": False, "key": key, "error": str(exc)}

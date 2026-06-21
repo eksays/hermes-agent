@@ -1216,15 +1216,50 @@ def init_agent(
                 exclude_patterns=_mem_exclude if _mem_exclude else None,
                 scan_interval_s=_mem_interval,
             )
+            # Store config flags for runtime use
+            agent._memory_system_doc_extract = bool(
+                _mem_idx_cfg.get("doc_content_extract", True)
+            )
+            agent._memory_system_auto_remember = bool(
+                _mem_idx_cfg.get("auto_remember", True)
+            )
             _mem_stats = agent._memory_system.initialize()
             agent._memory_system.start_background_indexing()
             _ra().logger.info(
                 "Hermes Memory System initialized: %d files indexed",
                 _mem_stats.get("files_added", 0),
             )
+
     except Exception as _mem_exc:
         _ra().logger.warning("Hermes Memory System init failed (non-fatal): %s", _mem_exc)
         agent._memory_system = None
+
+    # ── Inject Hermes Memory System tools into agent tool surface ─────────
+    # Register memory_search, memory_remember, memory_recall,
+    # memory_save_preference, memory_forget, memory_index, memory_status
+    # so the model can call them via function-calling.
+    if agent._memory_system is not None:
+        try:
+            _mem_tools = getattr(agent._memory_system, "tool_schemas", None)
+            if callable(_mem_tools):
+                _existing_names = {
+                    t.get("function", {}).get("name", "")
+                    for t in (getattr(agent, "tools", None) or [])
+                    if isinstance(t, dict)
+                }
+                for _schema in _mem_tools():
+                    _tname = _schema.get("function", {}).get("name", "")
+                    if _tname and _tname not in _existing_names:
+                        agent.tools.append(_schema)
+                        _existing_names.add(_tname)
+                _ra().logger.debug(
+                    "Hermes Memory System tool schemas injected"
+                )
+        except Exception as _inj_exc:
+            _ra().logger.warning(
+                "Failed to inject Hermes Memory tools (non-fatal): %s",
+                _inj_exc,
+            )
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10

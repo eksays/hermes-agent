@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List
 from agent.memory.db import MemoryDB
 from agent.memory.crawler import MemoryCrawler
 from agent.memory.tools import MemoryManager as MemoryToolsFacade
+from agent.memory.preferences import PreferenceStore
 from agent.memory import config as mem_config
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class MemoryManager:
             exclude_patterns=self.exclude_patterns,
         )
         self.facade = MemoryToolsFacade(self.db)
+        self.preferences = PreferenceStore(self.db)
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
@@ -96,6 +98,10 @@ class MemoryManager:
             try:
                 self.crawler.crawl(index_documents=True)
                 self.crawler.crawl_projects()
+                # Clean up expired memory facts
+                expired = self.db.cleanup_expired_facts()
+                if expired:
+                    logger.info("[memory] cleaned %d expired memory facts", expired)
             except Exception as exc:
                 logger.warning("[memory] background index error: %s", exc)
 
@@ -106,6 +112,69 @@ class MemoryManager:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
         self.db.close()
+
+    # ── Auto-remember ──────────────────────────────────────────────────────
+
+    def auto_remember_from_message(self, message: str) -> int:
+        """Extract and save observable facts from *message* using heuristics.
+
+        Looks for common preference/setting patterns in user messages:
+
+        * ``"I (like|prefer|use|want|need) ..."``
+        * ``"my ... (is|are|:) ..."``
+        * ``"(set|change|update|switch) ... (to|as) ..."``
+
+        Only fires when ``auto_remember`` is enabled via config.
+
+        Returns the number of facts saved.
+        """
+        if not message or not message.strip():
+            return 0
+
+        saved = 0
+        lower = message.lower()
+
+        # Pattern 1: "I like/prefer/use/want/need X"
+        import re
+        for match in re.finditer(
+            r"\b(?:i\s+)(?:like|prefer|use|want|need|love|hate)\s+([^.!?]{3,80}?)(?=[.!?]|$)",
+            lower,
+        ):
+            fact = match.group(1).strip()
+            if len(fact) > 5:
+                try:
+                    self.facade.remember(
+                        key=f"auto_pref_{fact[:40].replace(' ', '_')}",
+                        content=f"User indicated preference: {fact}",
+                        category="daily",
+                        source="system",
+                    )
+                    saved += 1
+                except Exception:
+                    pass
+
+        # Pattern 2: "my X is/are Y"
+        for match in re.finditer(
+            r"\bmy\s+(\w[\w\s]{1,40}?)\s+(?:is|are)\s+([^.!?]{2,60}?)(?=[.!?]|$)",
+            lower,
+        ):
+            key = match.group(1).strip()
+            val = match.group(2).strip()
+            if len(key) > 1 and len(val) > 1:
+                try:
+                    self.facade.remember(
+                        key=f"auto_{key[:40].replace(' ', '_')}",
+                        content=f"User's {key}: {val}",
+                        category="daily",
+                        source="system",
+                    )
+                    saved += 1
+                except Exception:
+                    pass
+
+        if saved:
+            logger.info("[memory] auto-remember: saved %d facts from message", saved)
+        return saved
 
     # ── Tool dispatch ─────────────────────────────────────────────────────
 
