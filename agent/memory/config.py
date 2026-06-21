@@ -9,6 +9,11 @@ DEFAULT_ROOTS = [
     "E:\\",
 ]
 
+# Full disk: empty exclude set. Exclusions can be added through
+# `.hermes/config.yaml` or environment overrides if specific directories
+# (e.g. Windows, Program Files) need to be skipped for performance.
+# File-level filtering is still applied via SKIP_EXTENSIONS and
+# MAX_FILE_SIZE_BYTES.
 DEFAULT_EXCLUDE_PATTERNS = set()
 
 SKIP_EXTENSIONS = {
@@ -35,9 +40,11 @@ SCORING_WEIGHTS = {
     "user_boost": 0.20,
     "git_activity": 0.15,
     "project_relevance": 0.10,
-    "similarity": 0.10,
+    "similarity": 0.10,  # TF-IDF content similarity
 }
-SCORING_INTERVAL_S = 60 * 60
+assert abs(sum(SCORING_WEIGHTS.values()) - 1.0) < 0.001, "scoring weights must sum to 1.0"
+
+SCORING_INTERVAL_S = 60 * 60  # recompute recommendation scores every hour
 STALE_DEFAULT_DAYS = 14
 TFIDF_MAX_FILES = 5000
-TFIDF_MAX_FILE_BYTES = 10 * 1024 * 1024
+TFIDF_MAX_FILE_BYTES = 10 * 1024 * 1024  # lower than MAX_FILE_SIZE — skip large payloads from feature extraction
