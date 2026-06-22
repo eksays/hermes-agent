@@ -12,6 +12,7 @@ import {
   requestPreviewReload,
   setPreviewTarget
 } from '@/store/preview'
+import { previewCandidateFromPayload, recordPreviewArtifact } from '@/store/preview-status'
 import { $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -119,13 +120,23 @@ export function usePreviewRouting({
         return
       }
 
+      // Detected previewable artifacts surface as compact links in the status
+      // stack — never auto-open the rail.
+      if (event.type.startsWith('tool.')) {
+        const candidate = previewCandidateFromPayload(event.payload)
+
+        if (candidate) {
+          recordPreviewArtifact(previewSessionId, candidate, currentCwd || '')
+        }
+      }
+
       // Only refresh an already-open live preview when a file changes; never
       // open one unprompted.
       if ($previewTarget.get()?.kind === 'url' && gatewayEventCompletedFileDiff(event)) {
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent]
+    [activeSessionIdRef, baseHandleGatewayEvent, currentCwd, previewSessionId]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

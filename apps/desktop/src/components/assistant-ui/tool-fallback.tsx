@@ -10,7 +10,6 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
-import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -36,7 +35,6 @@ import {
   countDiffLineStats,
   inlineDiffFromResult,
   isFileEditTool,
-  isPreviewableTarget,
   looksRedundant,
   type SearchResultRow,
   selectMessageRunning,
@@ -291,12 +289,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     Boolean(view.rawResult.trim())
 
   const hasExpandableContent = Boolean(
-    (view.previewTarget && isPreviewableTarget(view.previewTarget)) ||
-    view.imageUrl ||
-    view.inlineDiff ||
-    showDetail ||
-    hasSearchHits ||
-    toolViewMode === 'technical'
+    view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
   )
 
   const copyAction = useMemo(() => toolCopyPayload(part, view), [part, view])
@@ -424,9 +417,6 @@ function ToolEntry({ part }: ToolEntryProps) {
               stopPropagation
               text={copyAction.text}
             />
-          )}
-          {!embedded && view.previewTarget && isPreviewableTarget(view.previewTarget) && (
-            <PreviewAttachment source="tool-result" target={view.previewTarget} />
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
