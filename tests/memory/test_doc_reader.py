@@ -95,7 +95,8 @@ print("hello")
 
 def test_extract_pdf_simple():
     """Simple PDF text is extracted correctly."""
-    from reportlab.pdfgen import canvas
+    pytest.importorskip("pypdf")
+    canvas = pytest.importorskip("reportlab.pdfgen.canvas")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         path = f.name
     try:
@@ -115,7 +116,8 @@ def test_extract_pdf_simple():
 
 def test_extract_pdf_multi_page():
     """Multi-page PDF extracts text from all pages."""
-    from reportlab.pdfgen import canvas
+    pytest.importorskip("pypdf")
+    canvas = pytest.importorskip("reportlab.pdfgen.canvas")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         path = f.name
     try:
@@ -135,7 +137,8 @@ def test_extract_pdf_multi_page():
 
 def test_extract_pdf_empty():
     """Empty PDF (no text) returns empty result, not error."""
-    from reportlab.pdfgen import canvas
+    pytest.importorskip("pypdf")
+    canvas = pytest.importorskip("reportlab.pdfgen.canvas")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         path = f.name
     try:
@@ -155,6 +158,7 @@ def test_extract_pdf_empty():
 
 def test_extract_docx_simple():
     """Simple DOCX text is extracted correctly."""
+    pytest.importorskip("docx")
     from docx import Document
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
         path = f.name
@@ -175,6 +179,7 @@ def test_extract_docx_simple():
 
 def test_extract_docx_with_formatting():
     """DOCX with bold/italic/headings extracts plain text content."""
+    pytest.importorskip("docx")
     from docx import Document
     from docx.shared import Pt
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
