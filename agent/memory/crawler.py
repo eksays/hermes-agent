@@ -195,14 +195,25 @@ class MemoryCrawler:
         # ── Second pass: process each file ───────────────────────────────
         for idx, fpath in enumerate(walk_entries):
             try:
-                size = os.path.getsize(fpath)
+                # Catch FileNotFoundError or PermissionError immediately
+                try:
+                    size = os.path.getsize(fpath)
+                except (FileNotFoundError, PermissionError, OSError):
+                    files_skipped += 1
+                    continue
+
                 if size > self.max_file_size:
                     files_skipped += 1
                     seen_paths.add(fpath)
                     continue
 
                 ext = os.path.splitext(fpath)[1].lower()
-                checksum = _fast_checksum(fpath)
+                
+                try:
+                    checksum = _fast_checksum(fpath)
+                except (FileNotFoundError, PermissionError, OSError):
+                    files_skipped += 1
+                    continue
 
                 # Incremental: skip when checksum already matches the DB.
                 if self.db.file_exists(fpath, checksum):
@@ -211,9 +222,13 @@ class MemoryCrawler:
                     continue
 
                 filename = os.path.basename(fpath)
-                modified = datetime.fromtimestamp(
-                    os.path.getmtime(fpath), tz=timezone.utc
-                ).isoformat()
+                try:
+                    modified = datetime.fromtimestamp(
+                        os.path.getmtime(fpath), tz=timezone.utc
+                    ).isoformat()
+                except (FileNotFoundError, PermissionError, OSError):
+                    modified = datetime.now(timezone.utc).isoformat()
+                    
                 file_type = _classify_extension(ext)
 
                 self.db.upsert_file(
@@ -251,6 +266,7 @@ class MemoryCrawler:
 
                 seen_paths.add(fpath)
             except Exception:
+                # Still log unexpected exceptions but ignore common file removal errors
                 logger.exception("Error processing file: %s", fpath)
                 errors += 1
             finally:
