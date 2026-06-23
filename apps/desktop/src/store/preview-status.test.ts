@@ -4,38 +4,18 @@ import {
   $previewStatusBySession,
   clearPreviewArtifacts,
   dismissPreviewArtifact,
-  previewCandidateFromPayload,
   recordPreviewArtifact
 } from './preview-status'
 
 beforeEach(() => $previewStatusBySession.set({}))
 
-describe('previewCandidateFromPayload', () => {
-  it('extracts previewable paths and localhost urls', () => {
-    expect(previewCandidateFromPayload({ path: '/abs/index.html' })).toBe('/abs/index.html')
-    expect(previewCandidateFromPayload({ url: 'http://localhost:5173/' })).toBe('http://localhost:5173/')
-  })
-
-  it('pulls the html path out of an inline diff', () => {
-    expect(previewCandidateFromPayload({ inline_diff: '\u001b[0ma/demo.html -> b/demo.html\u001b[0m\n' })).toBe(
-      'demo.html'
-    )
-  })
-
-  it('ignores non-previewable targets', () => {
-    expect(previewCandidateFromPayload({ path: '/abs/notes.txt' })).toBe('')
-    expect(previewCandidateFromPayload({ url: 'https://example.com/' })).toBe('')
-    expect(previewCandidateFromPayload({})).toBe('')
-  })
-})
-
 describe('recordPreviewArtifact', () => {
-  it('dedupes by target and keeps the newest last', () => {
+  it('appends new targets newest-last and is idempotent', () => {
     recordPreviewArtifact('s1', '/a/index.html', '/work')
     recordPreviewArtifact('s1', '/a/about.html', '/work')
     recordPreviewArtifact('s1', '/a/index.html', '/work')
 
-    expect($previewStatusBySession.get().s1.map(i => i.id)).toEqual(['/a/about.html', '/a/index.html'])
+    expect($previewStatusBySession.get().s1.map(i => i.id)).toEqual(['/a/index.html', '/a/about.html'])
   })
 
   it('caps the list and derives a label', () => {

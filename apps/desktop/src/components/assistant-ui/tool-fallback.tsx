@@ -2,7 +2,7 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react'
+import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo } from 'react'
 
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -24,6 +24,8 @@ import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } f
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { recordPreviewArtifact } from '@/store/preview-status'
+import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
@@ -35,6 +37,7 @@ import {
   countDiffLineStats,
   inlineDiffFromResult,
   isFileEditTool,
+  isPreviewableTarget,
   looksRedundant,
   type SearchResultRow,
   selectMessageRunning,
@@ -239,6 +242,22 @@ function ToolEntry({ part }: ToolEntryProps) {
 
     return buildToolView(p, inlineDiff)
   }, [inlineDiff, isPending, part])
+
+  // Surface a previewable artifact (HTML file / localhost URL) as a compact link
+  // in the composer status stack rather than a bulky inline card. Uses the same
+  // detected target the old inline card did, keyed to the active session the
+  // stack reads from. Idempotent + dedup'd, so re-renders don't churn.
+  const activeSessionId = useStore($activeSessionId)
+  const currentCwd = useStore($currentCwd)
+  const previewTarget = view.previewTarget
+
+  useEffect(() => {
+    if (isPending || !activeSessionId || !previewTarget || !isPreviewableTarget(previewTarget)) {
+      return
+    }
+
+    recordPreviewArtifact(activeSessionId, previewTarget, currentCwd || '')
+  }, [activeSessionId, currentCwd, isPending, previewTarget])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {
