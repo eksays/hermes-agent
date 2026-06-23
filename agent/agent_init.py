@@ -1206,7 +1206,7 @@ def init_agent(
     agent._memory_system = None
     try:
         _mem_idx_cfg = _agent_cfg.get("memory_index", {})
-        if _mem_idx_cfg.get("enabled", True):
+        if not skip_memory and _mem_idx_cfg.get("enabled", True):
             from agent.memory import MemoryManager as _HermesMemory
             _mem_roots = _mem_idx_cfg.get("roots", [])
             _mem_exclude = set(_mem_idx_cfg.get("exclude", []))

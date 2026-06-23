@@ -67,12 +67,25 @@ class MemoryManager:
         self.scorer = Scorer(self.db)
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._run_initial_crawl = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
-    def initialize(self) -> dict:
-        """Run initial crawl + project indexing synchronously."""
+    def initialize(self, blocking: bool = False) -> dict:
+        """Prepare the memory index.
+
+        By default the initial crawl is deferred to the background indexing
+        thread (see ``start_background_indexing``) so that agent startup is
+        never blocked by a potentially large filesystem walk. Pass
+        ``blocking=True`` to run the first crawl synchronously (useful for
+        tests or one-shot indexing) and receive real stats back.
+        """
         logger.info("[memory] initializing at %s", self.db_path)
+        if not blocking:
+            # Defer the heavy walk; the background thread runs an immediate
+            # first pass on start. Startup returns instantly.
+            self._run_initial_crawl = True
+            return {"files_added": 0, "deferred": True}
         stats = self.crawler.crawl(index_documents=True)
         proj_stats = self.crawler.crawl_projects()
         stats.update(proj_stats)
@@ -93,6 +106,17 @@ class MemoryManager:
         logger.info("[memory] background indexing started (interval=%ds)", self.scan_interval_s)
 
     def _index_loop(self) -> None:
+        # Run an immediate first pass if initialize() deferred the initial
+        # crawl, so the index populates promptly without blocking startup.
+        if getattr(self, "_run_initial_crawl", False):
+            try:
+                stats = self.crawler.crawl(index_documents=True)
+                self.crawler.crawl_projects()
+                logger.info("[memory] initial crawl (background): %s", stats)
+            except Exception as exc:
+                logger.warning("[memory] initial background crawl error: %s", exc)
+            finally:
+                self._run_initial_crawl = False
         while not self._stop_event.is_set():
             self._stop_event.wait(self.scan_interval_s)
             if self._stop_event.is_set():
