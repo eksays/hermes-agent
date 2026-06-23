@@ -130,16 +130,14 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   if (previews.length > 0 && sessionId) {
     sections.push({
       key: 'preview',
+      // Not a collapsible group — preview links just sit there, one line each,
+      // each individually closeable.
       node: (
-        <StatusSection
-          defaultCollapsed={false}
-          icon={<Codicon className="text-muted-foreground/70" name="preview" size="0.8rem" />}
-          label={t.preview.tab}
-        >
+        <div className="px-1 py-0.5">
           {previews.map(item => (
             <PreviewStatusRow item={item} key={item.id} onDismiss={id => dismissPreviewArtifact(sessionId, id)} />
           ))}
-        </StatusSection>
+        </div>
       )
     })
   }
