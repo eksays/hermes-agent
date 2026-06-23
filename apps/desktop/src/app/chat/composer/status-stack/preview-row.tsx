@@ -3,6 +3,7 @@ import { memo, useState } from 'react'
 
 import { StatusRow } from '@/components/chat/status-row'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { MonitorPlay, X } from '@/lib/icons'
@@ -46,26 +47,57 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     }
   }
 
+  const openInBrowser = async () => {
+    try {
+      const target = await normalizeOrLocalPreviewTarget(item.target, item.cwd || undefined)
+
+      if (!target) {
+        throw new Error(`Could not open preview target: ${item.target}`)
+      }
+
+      await window.hermesDesktop?.openPreviewInBrowser?.(target.url)
+    } catch (error) {
+      notifyError(error, t.preview.unavailable)
+    }
+  }
+
   return (
     <StatusRow
       leading={<MonitorPlay aria-hidden className="size-3.5 text-muted-foreground/80" />}
       onActivate={() => void openPreview()}
       trailing={
-        <Tip label={t.statusStack.dismiss}>
-          <Button
-            aria-label={t.statusStack.dismiss}
-            className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-            onClick={event => {
-              event.stopPropagation()
-              onDismiss(item.id)
-            }}
-            size="icon-xs"
-            type="button"
-            variant="ghost"
-          >
-            <X size={12} />
-          </Button>
-        </Tip>
+        <span className="-my-1 flex items-center gap-0.5">
+          <Tip label={t.preview.openInBrowser}>
+            <Button
+              aria-label={t.preview.openInBrowser}
+              className="size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+              onClick={event => {
+                event.stopPropagation()
+                void openInBrowser()
+              }}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <Codicon name="link-external" size="0.75rem" />
+            </Button>
+          </Tip>
+          <Tip label={t.statusStack.dismiss}>
+            <Button
+              aria-label={t.statusStack.dismiss}
+              className="size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+              onClick={event => {
+                event.stopPropagation()
+                onDismiss(item.id)
+              }}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <X size={12} />
+            </Button>
+          </Tip>
+        </span>
       }
       trailingVisible
     >

@@ -944,6 +944,35 @@ function openExternalUrl(rawUrl) {
   return true
 }
 
+function openPreviewInBrowser(rawUrl) {
+  const raw = String(rawUrl || '').trim()
+  if (!raw) return false
+
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return false
+  }
+
+  if (parsed.protocol === 'file:') {
+    let localPath
+    try {
+      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open preview in browser' })
+    } catch {
+      return false
+    }
+
+    shell
+      .openExternal(pathToFileURL(localPath).toString())
+      .catch(error => rememberLog(`[preview] openExternal(file) failed: ${error.message}`))
+
+    return true
+  }
+
+  return openExternalUrl(raw)
+}
+
 function ensureWslWindowsFonts() {
   if (!IS_WSL) return
 
@@ -5995,6 +6024,12 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
 ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
+  }
+})
+
+ipcMain.handle('hermes:openPreviewInBrowser', (_event, url) => {
+  if (!openPreviewInBrowser(url)) {
+    throw new Error('Invalid preview URL')
   }
 })
 
